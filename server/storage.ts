@@ -56,9 +56,9 @@ export class DatabaseStorage implements IStorage {
   
   async seedVillagers() {
     const seeds: InsertVillager[] = [
-      { name: "Adam", gender: "male", age: 20, posX: 400, posY: 300, skillFarming: 20, skillBuilding: 10 },
-      { name: "Eve", gender: "female", age: 19, posX: 420, posY: 300, skillFarming: 15, skillResearch: 10 },
-      { name: "Cain", gender: "male", age: 2, posX: 410, posY: 320 },
+      { name: "Adam", gender: "male", age: 20, posX: 400, posY: 300, skillFarming: 20, skillBuilding: 10, traits: ["Hardworking", "Fast Learner"] },
+      { name: "Eve", gender: "female", age: 19, posX: 420, posY: 300, skillFarming: 15, skillResearch: 10, traits: ["Wise", "Nurturing"] },
+      { name: "Cain", gender: "male", age: 2, posX: 410, posY: 320, traits: ["Curious"] },
     ];
     
     await db.insert(villagers).values(seeds);

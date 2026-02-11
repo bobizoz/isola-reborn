@@ -35,6 +35,9 @@ export const villagers = pgTable("villagers", {
   // Position
   posX: integer("pos_x").notNull().default(400),
   posY: integer("pos_y").notNull().default(300),
+  // Additional traits
+  traits: text("traits").array().notNull().default(sql`ARRAY[]::text[]`),
+  thought: text("thought"),
 });
 
 export const gameState = pgTable("game_state", {
@@ -54,6 +57,8 @@ export const gameState = pgTable("game_state", {
   priorityBuilding: integer("priority_building").notNull().default(5),
   priorityResearch: integer("priority_research").notNull().default(2),
   priorityGathering: integer("priority_gathering").notNull().default(5),
+  // Achievements (stored as array of strings)
+  achievements: text("achievements").array().notNull().default(sql`ARRAY[]::text[]`),
 });
 
 // === SCHEMAS ===
