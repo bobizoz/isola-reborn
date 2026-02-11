@@ -150,7 +150,7 @@ export default function Game() {
           <div>
             <h1 className="text-3xl font-pixel text-primary drop-shadow-sm">ISOLA: REBORN</h1>
             <p className="text-sm font-retro text-muted-foreground uppercase tracking-widest">
-              Day {Math.floor(gameState.gameTick / 1000)} of the New Era
+              Day {Math.floor(gameState.gameTick / 100)} of the New Era
             </p>
           </div>
           <Button onClick={handleSpawnVillager} className="retro-btn bg-primary text-white font-pixel text-xs border-primary-foreground/20">

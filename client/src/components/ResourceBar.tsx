@@ -52,7 +52,7 @@ function ResourceItem({ icon, value, label }: { icon: React.ReactNode, value: nu
       </div>
       <div className="flex flex-col">
         <span className="font-pixel text-xs text-muted-foreground uppercase">{label}</span>
-        <span className="font-retro text-2xl font-bold leading-none">{value}</span>
+        <span className="font-retro text-2xl font-bold leading-none">{Math.floor(value)}</span>
       </div>
     </div>
   );
