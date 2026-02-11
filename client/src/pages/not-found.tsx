@@ -1,21 +1,21 @@
-import { Card, CardContent } from "@/components/ui/card";
-import { AlertCircle } from "lucide-react";
+import { Link } from "wouter";
+import { Button } from "@/components/ui/button";
 
 export default function NotFound() {
   return (
-    <div className="min-h-screen w-full flex items-center justify-center bg-gray-50">
-      <Card className="w-full max-w-md mx-4">
-        <CardContent className="pt-6">
-          <div className="flex mb-4 gap-2">
-            <AlertCircle className="h-8 w-8 text-red-500" />
-            <h1 className="text-2xl font-bold text-gray-900">404 Page Not Found</h1>
-          </div>
-
-          <p className="mt-4 text-sm text-gray-600">
-            Did you forget to add the page to the router?
-          </p>
-        </CardContent>
-      </Card>
+    <div className="min-h-screen flex items-center justify-center bg-[#e6dcc3] p-4">
+      <div className="retro-box p-12 text-center max-w-md w-full space-y-6">
+        <h1 className="font-pixel text-6xl text-primary mb-4">404</h1>
+        <div className="w-full h-px bg-foreground/10 my-4" />
+        <p className="font-retro text-xl text-muted-foreground">
+          This island does not exist on our maps.
+        </p>
+        <Link href="/">
+          <Button className="retro-btn w-full font-pixel mt-6">
+            Return to Village
+          </Button>
+        </Link>
+      </div>
     </div>
   );
 }
