@@ -29,7 +29,9 @@ import {
   WorldTerrain,
   ResourceNode,
   getTerrainColor,
+  getFeatureColor,
   TerrainType,
+  TerrainCell,
 } from "@/lib/world-generator";
 import { MiniMap } from "./MiniMap";
 import { CameraControls } from "./CameraControls";
@@ -68,6 +70,8 @@ const RESOURCE_EMOJIS: Record<string, string> = {
   fish: "🐟",
   gold: "💎",
   iron: "⚙️",
+  herbs: "🌿",
+  mushroom: "🍄",
 };
 
 // Terrain type to emoji (for medium detail)
@@ -76,8 +80,11 @@ const TERRAIN_ICONS: Record<TerrainType, string> = {
   forest: "🌲",
   mountain: "⛰️",
   water: "🌊",
+  deepwater: "🌊",
   desert: "🏜️",
   swamp: "🌿",
+  beach: "🏖️",
+  snow: "❄️",
 };
 
 export function GameCanvas({
@@ -115,7 +122,7 @@ export function GameCanvas({
     return () => observer.disconnect();
   }, []);
 
-  // Draw terrain on canvas
+  // Draw terrain on canvas - optimized for larger world
   useEffect(() => {
     const canvas = terrainCanvasRef.current;
     if (!canvas) return;
@@ -127,55 +134,98 @@ export function GameCanvas({
     canvas.width = width;
     canvas.height = height;
 
-    // Clear
-    ctx.clearRect(0, 0, width, height);
+    // Clear with water base color
+    ctx.fillStyle = "#1a3a4a";
+    ctx.fillRect(0, 0, width, height);
 
     // Calculate visible area
     const cellSize = terrain.cellSize;
     const scaledCellWidth = cellSize * camera.zoom;
     const scaledCellHeight = cellSize * camera.zoom;
+    
+    // Calculate visible cell range for optimization
+    const viewLeft = camera.x - (width / 2) / camera.zoom - cellSize;
+    const viewRight = camera.x + (width / 2) / camera.zoom + cellSize;
+    const viewTop = camera.y - (height / 2) / camera.zoom - cellSize;
+    const viewBottom = camera.y + (height / 2) / camera.zoom + cellSize;
+    
+    const startCol = Math.max(0, Math.floor(viewLeft / cellSize));
+    const endCol = Math.min(terrain.cells[0]?.length || 0, Math.ceil(viewRight / cellSize));
+    const startRow = Math.max(0, Math.floor(viewTop / cellSize));
+    const endRow = Math.min(terrain.cells.length, Math.ceil(viewBottom / cellSize));
 
-    // Draw terrain cells
-    for (let row = 0; row < terrain.cells.length; row++) {
-      for (let col = 0; col < terrain.cells[row].length; col++) {
-        const cell = terrain.cells[row][col];
-
-        // Check if in view
-        if (!isInView(cell.x, cell.y, camera, width, height, cellSize)) continue;
+    // Draw terrain cells - only visible ones
+    for (let row = startRow; row < endRow; row++) {
+      for (let col = startCol; col < endCol; col++) {
+        const cell = terrain.cells[row]?.[col];
+        if (!cell) continue;
 
         const screenX = worldToScreenX(cell.x - cellSize / 2, camera, width);
         const screenY = worldToScreenY(cell.y - cellSize / 2, camera, height);
 
-        ctx.fillStyle = getTerrainColor(cell.type, cell.elevation);
+        // Draw base terrain with enhanced colors
+        ctx.fillStyle = getTerrainColor(cell.type, cell.elevation, cell.variant, cell.temperature);
         ctx.fillRect(screenX, screenY, scaledCellWidth + 1, scaledCellHeight + 1);
+        
+        // Draw terrain features (trees, rocks, vegetation) at medium+ detail
+        if (lodLevel !== "strategic" && scaledCellWidth > 10) {
+          const featureColor = getFeatureColor(cell);
+          if (featureColor) {
+            const featureSize = scaledCellWidth * 0.4;
+            const featureX = screenX + scaledCellWidth * (0.3 + cell.variant * 0.4);
+            const featureY = screenY + scaledCellHeight * (0.3 + cell.variant * 0.4);
+            
+            ctx.fillStyle = featureColor;
+            if (cell.hasTree) {
+              // Draw simple tree shape
+              ctx.beginPath();
+              ctx.arc(featureX, featureY, featureSize * 0.6, 0, Math.PI * 2);
+              ctx.fill();
+            } else if (cell.hasRock) {
+              // Draw rock shape
+              ctx.fillRect(featureX - featureSize * 0.3, featureY - featureSize * 0.2, featureSize * 0.6, featureSize * 0.4);
+            } else if (cell.hasVegetation) {
+              // Draw small vegetation dots
+              ctx.beginPath();
+              ctx.arc(featureX, featureY, featureSize * 0.3, 0, Math.PI * 2);
+              ctx.fill();
+            }
+          }
+        }
       }
     }
 
-    // Draw rivers
-    ctx.strokeStyle = "rgba(100, 150, 200, 0.6)";
+    // Draw rivers with improved rendering
     ctx.lineCap = "round";
-    terrain.rivers.forEach((point, i) => {
-      if (!isInView(point.x, point.y, camera, width, height, 50)) return;
+    ctx.lineJoin = "round";
+    terrain.rivers.forEach((point) => {
+      if (point.x < viewLeft - 50 || point.x > viewRight + 50 || 
+          point.y < viewTop - 50 || point.y > viewBottom + 50) return;
       
       const screenX = worldToScreenX(point.x, camera, width);
       const screenY = worldToScreenY(point.y, camera, height);
+      const riverWidth = point.width * camera.zoom;
       
-      ctx.lineWidth = point.width * camera.zoom;
+      // River gradient effect
+      const gradient = ctx.createRadialGradient(screenX, screenY, 0, screenX, screenY, riverWidth * 0.7);
+      gradient.addColorStop(0, `rgba(80, 140, 180, ${0.7 * point.depth})`);
+      gradient.addColorStop(1, `rgba(60, 120, 160, ${0.4 * point.depth})`);
+      
+      ctx.fillStyle = gradient;
       ctx.beginPath();
-      ctx.moveTo(screenX, screenY - 10 * camera.zoom);
-      ctx.lineTo(screenX, screenY + 10 * camera.zoom);
-      ctx.stroke();
+      ctx.arc(screenX, screenY, riverWidth * 0.5, 0, Math.PI * 2);
+      ctx.fill();
     });
 
-    // Draw grid at medium+ detail
-    if (lodLevel !== "strategic") {
-      ctx.strokeStyle = "rgba(0,0,0,0.05)";
+    // Draw subtle grid at detailed level only
+    if (lodLevel === "detailed" && scaledCellWidth > 20) {
+      ctx.strokeStyle = "rgba(0,0,0,0.03)";
       ctx.lineWidth = 1;
 
-      for (let row = 0; row < terrain.cells.length; row++) {
-        for (let col = 0; col < terrain.cells[row].length; col++) {
-          const cell = terrain.cells[row][col];
-          if (!isInView(cell.x, cell.y, camera, width, height, cellSize)) continue;
+      for (let row = startRow; row < endRow; row++) {
+        for (let col = startCol; col < endCol; col++) {
+          const cell = terrain.cells[row]?.[col];
+          if (!cell) continue;
 
           const screenX = worldToScreenX(cell.x - cellSize / 2, camera, width);
           const screenY = worldToScreenY(cell.y - cellSize / 2, camera, height);

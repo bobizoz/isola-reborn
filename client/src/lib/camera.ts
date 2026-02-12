@@ -15,19 +15,19 @@ export interface CameraState {
   lastMouseY: number;
 }
 
-export const WORLD_WIDTH = 1600;   // Total world width
-export const WORLD_HEIGHT = 1200;  // Total world height
-export const MIN_ZOOM = 0.25;      // Strategic view - see entire world
+export const WORLD_WIDTH = 3200;   // Total world width (expanded from 1600)
+export const WORLD_HEIGHT = 2400;  // Total world height (expanded from 1200)
+export const MIN_ZOOM = 0.15;      // Strategic view - see entire world (adjusted for larger map)
 export const MAX_ZOOM = 3;         // Detailed view - see individual villagers
-export const DEFAULT_ZOOM = 1;
+export const DEFAULT_ZOOM = 0.8;   // Default zoom adjusted for larger world
 export const ZOOM_SPEED = 0.1;
 export const PAN_LERP = 0.15;      // Smooth panning factor
 export const ZOOM_LERP = 0.12;     // Smooth zoom factor
 
 // Zoom level thresholds for LOD
-export const ZOOM_STRATEGIC = 0.4;  // Below this = strategic view
-export const ZOOM_MEDIUM = 0.8;     // Below this = medium detail
-export const ZOOM_DETAILED = 1.5;   // Above this = full detail
+export const ZOOM_STRATEGIC = 0.3;  // Below this = strategic view (adjusted)
+export const ZOOM_MEDIUM = 0.6;     // Below this = medium detail (adjusted)
+export const ZOOM_DETAILED = 1.2;   // Above this = full detail (adjusted)
 
 export function createCamera(): CameraState {
   return {

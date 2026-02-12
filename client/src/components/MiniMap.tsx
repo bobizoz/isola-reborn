@@ -57,7 +57,7 @@ export function MiniMap({
     for (let row = 0; row < terrain.cells.length; row++) {
       for (let col = 0; col < terrain.cells[row].length; col++) {
         const cell = terrain.cells[row][col];
-        ctx.fillStyle = getTerrainColor(cell.type, cell.elevation);
+        ctx.fillStyle = getTerrainColor(cell.type, cell.elevation, cell.variant, cell.temperature);
         ctx.fillRect(
           col * miniCellWidth,
           row * miniCellHeight,
