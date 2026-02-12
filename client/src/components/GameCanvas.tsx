@@ -1,6 +1,6 @@
 /**
- * Enhanced GameCanvas with Dynamic Zoom and LOD System
- * ISOLA: REBORN - World Visualization System
+ * Enhanced GameCanvas with Planet View and Dynamic Zoom
+ * ISOLA: REBORN - AAA Quality World Visualization System
  */
 
 import { useEffect, useRef, useCallback, useState, useMemo } from "react";
@@ -19,11 +19,16 @@ import {
   LODLevel,
   zoomCamera,
   panCamera,
+  rotateWorld,
   updateCamera,
   focusOn,
   resetCamera,
+  toPlanetView,
   createCamera,
   MIN_ZOOM,
+  PLANET_VIEW_THRESHOLD,
+  applyPlanetDistortion,
+  getZoomPercentage,
 } from "@/lib/camera";
 import {
   WorldTerrain,
@@ -74,7 +79,7 @@ const RESOURCE_EMOJIS: Record<string, string> = {
   mushroom: "🍄",
 };
 
-// Terrain type to emoji (for medium detail)
+// Terrain type to emoji
 const TERRAIN_ICONS: Record<TerrainType, string> = {
   plains: "",
   forest: "🌲",
@@ -101,12 +106,16 @@ export function GameCanvas({
 }: GameCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const terrainCanvasRef = useRef<HTMLCanvasElement>(null);
+  const planetCanvasRef = useRef<HTMLCanvasElement>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 });
   const [isDragging, setIsDragging] = useState(false);
   const [lastDragPos, setLastDragPos] = useState({ x: 0, y: 0 });
+  const [hoveredTribe, setHoveredTribe] = useState<Tribe | null>(null);
+  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
 
   // Get current LOD level
   const lodLevel = getLODLevel(camera.zoom);
+  const isPlanetView = camera.zoom < PLANET_VIEW_THRESHOLD;
 
   // Resize observer
   useEffect(() => {
@@ -122,8 +131,202 @@ export function GameCanvas({
     return () => observer.disconnect();
   }, []);
 
+  // Draw planet view globe effect
+  useEffect(() => {
+    if (!isPlanetView) return;
+    
+    const canvas = planetCanvasRef.current;
+    if (!canvas) return;
+    
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    
+    const { width, height } = canvasSize;
+    canvas.width = width;
+    canvas.height = height;
+    
+    // Clear
+    ctx.clearRect(0, 0, width, height);
+    
+    // Calculate globe parameters
+    const centerX = width / 2;
+    const centerY = height / 2;
+    const radius = Math.min(width, height) * 0.38;
+    
+    // Draw space background with stars
+    ctx.fillStyle = "#0a0a15";
+    ctx.fillRect(0, 0, width, height);
+    
+    // Draw stars
+    const starCount = 150;
+    for (let i = 0; i < starCount; i++) {
+      const sx = (Math.sin(i * 12.34) * 0.5 + 0.5) * width;
+      const sy = (Math.cos(i * 7.89) * 0.5 + 0.5) * height;
+      const brightness = 0.3 + Math.sin(Date.now() * 0.001 + i) * 0.3;
+      const size = 1 + Math.random() * 1.5;
+      ctx.fillStyle = `rgba(255, 255, 255, ${brightness})`;
+      ctx.beginPath();
+      ctx.arc(sx, sy, size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    
+    // Draw outer atmosphere glow
+    const atmosphereGradient = ctx.createRadialGradient(
+      centerX, centerY, radius * 0.9,
+      centerX, centerY, radius * 1.3
+    );
+    atmosphereGradient.addColorStop(0, "rgba(100, 180, 255, 0.3)");
+    atmosphereGradient.addColorStop(0.5, "rgba(100, 180, 255, 0.15)");
+    atmosphereGradient.addColorStop(1, "rgba(100, 180, 255, 0)");
+    ctx.fillStyle = atmosphereGradient;
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, radius * 1.3, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Draw the planet surface
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+    ctx.clip();
+    
+    // Sample terrain at lower resolution for performance
+    const resolution = 4;
+    const cellSize = terrain.cellSize;
+    const cols = Math.ceil(WORLD_WIDTH / (cellSize * resolution));
+    const rows = Math.ceil(WORLD_HEIGHT / (cellSize * resolution));
+    
+    for (let row = 0; row < rows; row++) {
+      for (let col = 0; col < cols; col++) {
+        const worldX = col * cellSize * resolution + cellSize * resolution / 2;
+        const worldY = row * cellSize * resolution + cellSize * resolution / 2;
+        
+        // Map world coords to sphere
+        const normalizedX = (worldX / WORLD_WIDTH - 0.5) * 2;
+        const normalizedY = (worldY / WORLD_HEIGHT - 0.5) * 2;
+        
+        // Apply rotation
+        const rotatedX = normalizedX * Math.cos(camera.rotation) - normalizedY * Math.sin(camera.rotation) * 0.2;
+        const rotatedY = normalizedY;
+        
+        // Check if on visible hemisphere
+        const dist = Math.sqrt(rotatedX * rotatedX + rotatedY * rotatedY);
+        if (dist > 1) continue;
+        
+        // Spherical projection
+        const z = Math.sqrt(1 - dist * dist);
+        const projX = centerX + rotatedX * radius;
+        const projY = centerY + rotatedY * radius;
+        
+        // Get terrain color
+        const cellRow = Math.floor(worldY / cellSize);
+        const cellCol = Math.floor(worldX / cellSize);
+        const cell = terrain.cells[cellRow]?.[cellCol];
+        
+        if (cell) {
+          let color = getTerrainColor(cell.type, cell.elevation, cell.variant, cell.temperature);
+          
+          // Apply lighting (simple directional)
+          const lightAngle = Math.PI * 0.25;
+          const lightX = Math.cos(lightAngle);
+          const lightZ = Math.sin(lightAngle);
+          const lighting = 0.4 + 0.6 * Math.max(0, rotatedX * lightX + z * lightZ);
+          
+          // Parse and apply lighting
+          const rgb = hexToRgb(color);
+          if (rgb) {
+            const r = Math.round(rgb.r * lighting);
+            const g = Math.round(rgb.g * lighting);
+            const b = Math.round(rgb.b * lighting);
+            ctx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+          } else {
+            ctx.fillStyle = color;
+          }
+          
+          const pixelSize = (radius * 2 / cols) * 1.2;
+          ctx.fillRect(projX - pixelSize / 2, projY - pixelSize / 2, pixelSize, pixelSize);
+        }
+      }
+    }
+    
+    // Draw tribe territories on planet
+    tribes.forEach((tribe) => {
+      const normalizedX = (tribe.centerX / WORLD_WIDTH - 0.5) * 2;
+      const normalizedY = (tribe.centerY / WORLD_HEIGHT - 0.5) * 2;
+      
+      const rotatedX = normalizedX * Math.cos(camera.rotation) - normalizedY * Math.sin(camera.rotation) * 0.2;
+      const rotatedY = normalizedY;
+      
+      const dist = Math.sqrt(rotatedX * rotatedX + rotatedY * rotatedY);
+      if (dist > 0.95) return;
+      
+      const z = Math.sqrt(1 - Math.min(1, dist * dist));
+      const projX = centerX + rotatedX * radius;
+      const projY = centerY + rotatedY * radius;
+      
+      // Territory glow
+      const glowRadius = (tribe.territoryRadius / WORLD_WIDTH) * radius * 2 * z;
+      const territoryGradient = ctx.createRadialGradient(
+        projX, projY, 0,
+        projX, projY, glowRadius
+      );
+      territoryGradient.addColorStop(0, `${tribe.color}80`);
+      territoryGradient.addColorStop(0.7, `${tribe.color}30`);
+      territoryGradient.addColorStop(1, `${tribe.color}00`);
+      
+      ctx.fillStyle = territoryGradient;
+      ctx.beginPath();
+      ctx.arc(projX, projY, glowRadius, 0, Math.PI * 2);
+      ctx.fill();
+      
+      // Territory marker
+      ctx.fillStyle = tribe.color;
+      ctx.beginPath();
+      ctx.arc(projX, projY, 5 * z + 2, 0, Math.PI * 2);
+      ctx.fill();
+      
+      // Glow effect
+      ctx.shadowColor = tribe.color;
+      ctx.shadowBlur = 10;
+      ctx.beginPath();
+      ctx.arc(projX, projY, 3 * z + 1, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    });
+    
+    ctx.restore();
+    
+    // Draw planet edge highlight
+    const edgeGradient = ctx.createRadialGradient(
+      centerX - radius * 0.3, centerY - radius * 0.3, 0,
+      centerX, centerY, radius
+    );
+    edgeGradient.addColorStop(0, "rgba(255, 255, 255, 0.15)");
+    edgeGradient.addColorStop(0.5, "rgba(255, 255, 255, 0.02)");
+    edgeGradient.addColorStop(1, "rgba(0, 0, 0, 0.3)");
+    ctx.fillStyle = edgeGradient;
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Draw planet shadow
+    const shadowGradient = ctx.createLinearGradient(
+      centerX - radius, centerY,
+      centerX + radius, centerY
+    );
+    shadowGradient.addColorStop(0, "rgba(0, 0, 0, 0)");
+    shadowGradient.addColorStop(0.6, "rgba(0, 0, 0, 0)");
+    shadowGradient.addColorStop(1, "rgba(0, 0, 0, 0.4)");
+    ctx.fillStyle = shadowGradient;
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
+    ctx.fill();
+    
+  }, [isPlanetView, camera, terrain, tribes, canvasSize]);
+
   // Draw terrain on canvas - optimized for larger world
   useEffect(() => {
+    if (isPlanetView) return; // Skip when in planet view
+    
     const canvas = terrainCanvasRef.current;
     if (!canvas) return;
 
@@ -134,8 +337,8 @@ export function GameCanvas({
     canvas.width = width;
     canvas.height = height;
 
-    // Clear with water base color
-    ctx.fillStyle = "#1a3a4a";
+    // Clear with deep color
+    ctx.fillStyle = "#0f2027";
     ctx.fillRect(0, 0, width, height);
 
     // Calculate visible area
@@ -167,8 +370,8 @@ export function GameCanvas({
         ctx.fillStyle = getTerrainColor(cell.type, cell.elevation, cell.variant, cell.temperature);
         ctx.fillRect(screenX, screenY, scaledCellWidth + 1, scaledCellHeight + 1);
         
-        // Draw terrain features (trees, rocks, vegetation) at medium+ detail
-        if (lodLevel !== "strategic" && scaledCellWidth > 10) {
+        // Draw terrain features at medium+ detail
+        if (lodLevel !== "strategic" && lodLevel !== "planet" && scaledCellWidth > 10) {
           const featureColor = getFeatureColor(cell);
           if (featureColor) {
             const featureSize = scaledCellWidth * 0.4;
@@ -177,15 +380,12 @@ export function GameCanvas({
             
             ctx.fillStyle = featureColor;
             if (cell.hasTree) {
-              // Draw simple tree shape
               ctx.beginPath();
               ctx.arc(featureX, featureY, featureSize * 0.6, 0, Math.PI * 2);
               ctx.fill();
             } else if (cell.hasRock) {
-              // Draw rock shape
               ctx.fillRect(featureX - featureSize * 0.3, featureY - featureSize * 0.2, featureSize * 0.6, featureSize * 0.4);
             } else if (cell.hasVegetation) {
-              // Draw small vegetation dots
               ctx.beginPath();
               ctx.arc(featureX, featureY, featureSize * 0.3, 0, Math.PI * 2);
               ctx.fill();
@@ -206,7 +406,6 @@ export function GameCanvas({
       const screenY = worldToScreenY(point.y, camera, height);
       const riverWidth = point.width * camera.zoom;
       
-      // River gradient effect
       const gradient = ctx.createRadialGradient(screenX, screenY, 0, screenX, screenY, riverWidth * 0.7);
       gradient.addColorStop(0, `rgba(80, 140, 180, ${0.7 * point.depth})`);
       gradient.addColorStop(1, `rgba(60, 120, 160, ${0.4 * point.depth})`);
@@ -234,21 +433,32 @@ export function GameCanvas({
         }
       }
     }
-  }, [camera, terrain, canvasSize, lodLevel]);
+  }, [camera, terrain, canvasSize, lodLevel, isPlanetView]);
 
-  // Camera animation loop
+  // Smooth camera animation loop
   useEffect(() => {
     let animationFrame: number;
+    let lastTime = performance.now();
 
-    const animate = () => {
-      const updatedCamera = updateCamera(camera);
-      if (
-        Math.abs(updatedCamera.x - camera.x) > 0.1 ||
-        Math.abs(updatedCamera.y - camera.y) > 0.1 ||
-        Math.abs(updatedCamera.zoom - camera.zoom) > 0.001
-      ) {
-        onCameraChange(updatedCamera);
+    const animate = (time: number) => {
+      const delta = time - lastTime;
+      
+      // Cap delta to prevent jumps
+      if (delta > 0 && delta < 100) {
+        const updatedCamera = updateCamera(camera);
+        const needsUpdate =
+          Math.abs(updatedCamera.x - camera.x) > 0.01 ||
+          Math.abs(updatedCamera.y - camera.y) > 0.01 ||
+          Math.abs(updatedCamera.zoom - camera.zoom) > 0.0001 ||
+          Math.abs(updatedCamera.rotation - camera.rotation) > 0.0001 ||
+          Math.abs(updatedCamera.rotationVelocity) > 0.0001;
+          
+        if (needsUpdate) {
+          onCameraChange(updatedCamera);
+        }
       }
+      
+      lastTime = time;
       animationFrame = requestAnimationFrame(animate);
     };
 
@@ -256,7 +466,7 @@ export function GameCanvas({
     return () => cancelAnimationFrame(animationFrame);
   }, [camera, onCameraChange]);
 
-  // Mouse wheel zoom
+  // Mouse wheel zoom with smooth transition
   const handleWheel = useCallback(
     (e: React.WheelEvent) => {
       e.preventDefault();
@@ -279,7 +489,7 @@ export function GameCanvas({
     [camera, canvasSize, onCameraChange]
   );
 
-  // Mouse drag pan
+  // Mouse drag pan/rotate
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button === 0) {
       setIsDragging(true);
@@ -289,6 +499,8 @@ export function GameCanvas({
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
+      setMousePos({ x: e.clientX, y: e.clientY });
+      
       if (!isDragging) return;
 
       const dx = e.clientX - lastDragPos.x;
@@ -347,14 +559,20 @@ export function GameCanvas({
   );
 
   const handleStrategicView = useCallback(() => {
-    onCameraChange(
-      focusOn(camera, WORLD_WIDTH / 2, WORLD_HEIGHT / 2, MIN_ZOOM)
-    );
+    onCameraChange(toPlanetView(camera));
+  }, [camera, onCameraChange]);
+
+  const handleRotateLeft = useCallback(() => {
+    onCameraChange(rotateWorld(camera, -0.2));
+  }, [camera, onCameraChange]);
+
+  const handleRotateRight = useCallback(() => {
+    onCameraChange(rotateWorld(camera, 0.2));
   }, [camera, onCameraChange]);
 
   const handleMiniMapNavigate = useCallback(
     (worldX: number, worldY: number) => {
-      onCameraChange(focusOn(camera, worldX, worldY));
+      onCameraChange(focusOn(camera, worldX, worldY, Math.max(0.4, camera.zoom)));
     },
     [camera, onCameraChange]
   );
@@ -370,15 +588,16 @@ export function GameCanvas({
 
   // Visible entities filtering
   const visibleVillagers = useMemo(() => {
+    if (isPlanetView) return [];
     return villagers.filter(
       (v) =>
         !v.isDead &&
         isInView(v.posX, v.posY, camera, canvasSize.width, canvasSize.height, 50)
     );
-  }, [villagers, camera, canvasSize]);
+  }, [villagers, camera, canvasSize, isPlanetView]);
 
   const visibleResources = useMemo(() => {
-    if (lodLevel === "strategic") return [];
+    if (lodLevel === "strategic" || lodLevel === "planet") return [];
     return terrain.resources.filter((r) =>
       isInView(r.x, r.y, camera, canvasSize.width, canvasSize.height, 30)
     );
@@ -401,16 +620,22 @@ export function GameCanvas({
     const scale = Math.min(1.5, Math.max(0.4, camera.zoom));
 
     if (lodLevel === "strategic") {
-      // Strategic: Just colored dots
       return (
-        <div
+        <motion.div
           key={v.id}
-          className="absolute w-2 h-2 rounded-full cursor-pointer transition-transform hover:scale-150"
+          className="absolute w-2 h-2 rounded-full cursor-pointer"
+          initial={{ scale: 0 }}
+          animate={{ 
+            scale: 1,
+            x: pos.x - 4,
+            y: pos.y - 4,
+          }}
+          whileHover={{ scale: 1.5 }}
+          transition={{ type: "spring", stiffness: 500, damping: 30 }}
           style={{
-            left: pos.x - 4,
-            top: pos.y - 4,
             backgroundColor: tribeColor,
             opacity: isFromSelectedTribe || !selectedTribeId ? 1 : 0.4,
+            boxShadow: `0 0 6px ${tribeColor}`,
           }}
           onClick={(e) => {
             e.stopPropagation();
@@ -422,27 +647,26 @@ export function GameCanvas({
     }
 
     if (lodLevel === "medium") {
-      // Medium: Colored dots with action indicator
       const actionInfo = ACTION_EMOJIS[v.action] || ACTION_EMOJIS.idle;
       return (
-        <div
+        <motion.div
           key={v.id}
           className="absolute cursor-pointer flex flex-col items-center group"
-          style={{
-            left: pos.x - 8 * scale,
-            top: pos.y - 10 * scale,
-            transform: `scale(${scale})`,
-            transformOrigin: "center",
+          initial={{ scale: 0, opacity: 0 }}
+          animate={{
+            scale: scale,
             opacity: isFromSelectedTribe || !selectedTribeId ? 1 : 0.5,
+            x: pos.x - 8 * scale,
+            y: pos.y - 10 * scale,
           }}
+          whileHover={{ scale: scale * 1.2 }}
+          transition={{ type: "spring", stiffness: 400, damping: 25 }}
           onClick={(e) => {
             e.stopPropagation();
             onVillagerClick(v);
           }}
         >
-          {/* Action emoji above */}
           <div className="text-xs mb-0.5 opacity-70">{actionInfo.emoji}</div>
-          {/* Villager dot */}
           <div
             className={`w-4 h-4 rounded-full border-2 ${
               selectedVillagerId === v.id ? "ring-2 ring-yellow-400" : ""
@@ -450,9 +674,10 @@ export function GameCanvas({
             style={{
               backgroundColor: v.skinColor,
               borderColor: tribeColor,
+              boxShadow: `0 0 8px ${tribeColor}50`,
             }}
           />
-        </div>
+        </motion.div>
       );
     }
 
@@ -471,7 +696,8 @@ export function GameCanvas({
           scale: scale,
         }}
         exit={{ opacity: 0, scale: 0 }}
-        transition={{ type: "tween", ease: "linear", duration: 0.1 }}
+        whileHover={{ scale: scale * 1.1 }}
+        transition={{ type: "spring", stiffness: 300, damping: 25 }}
         onClick={(e) => {
           e.stopPropagation();
           onVillagerClick(v);
@@ -507,26 +733,19 @@ export function GameCanvas({
             borderRadius: "4px 4px 0 0",
           }}
         >
-          {/* Hair */}
           <div
             className="absolute top-0 w-full h-3 rounded-t"
             style={{ backgroundColor: v.hairColor }}
           />
-
-          {/* Eyes */}
           <div className="absolute top-3 left-1 w-1 h-1 bg-black rounded-full" />
           <div className="absolute top-3 right-1 w-1 h-1 bg-black rounded-full" />
-
-          {/* Clothes with tribe color */}
           <div
             className="absolute bottom-0 w-full h-3"
             style={{ backgroundColor: tribeColor }}
           />
-
-          {/* Health Bar (Mini) */}
           <div className="absolute -bottom-2 left-0 w-full h-1 bg-gray-300 rounded overflow-hidden">
             <div
-              className={`h-full ${
+              className={`h-full transition-all duration-300 ${
                 v.health < 30
                   ? "bg-red-500"
                   : v.health < 60
@@ -536,8 +755,6 @@ export function GameCanvas({
               style={{ width: `${v.health}%` }}
             />
           </div>
-
-          {/* Fleeing indicator */}
           {v.action === "fleeing" && (
             <div className="absolute -top-4 left-1/2 -translate-x-1/2 text-xs">
               😱
@@ -560,23 +777,34 @@ export function GameCanvas({
     );
   };
 
-  // Render tribe territory and info
+  // Render tribe territory and info with hover effect
   const renderTribe = (tribe: Tribe) => {
+    if (isPlanetView) return null;
+    
     const centerPos = toScreen(tribe.centerX, tribe.centerY);
     const scaledRadius = tribe.territoryRadius * camera.zoom;
     const tribePop = villagers.filter(
       (v) => v.tribeId === tribe.id && !v.isDead
     ).length;
+    const isHovered = hoveredTribe?.id === tribe.id;
+    const isSelected = selectedTribeId === tribe.id;
 
     if (lodLevel === "strategic") {
-      // Strategic view: Large territory circles with detailed info
       return (
-        <div key={`tribe-${tribe.id}`}>
-          {/* Territory Circle */}
-          <div
-            className={`absolute rounded-full transition-all duration-300 cursor-pointer ${
-              selectedTribeId === tribe.id ? "opacity-50" : "opacity-30"
-            }`}
+        <motion.div 
+          key={`tribe-${tribe.id}`}
+          initial={{ scale: 0 }}
+          animate={{ scale: 1 }}
+          transition={{ type: "spring", stiffness: 200, damping: 20 }}
+        >
+          {/* Territory Circle with pulse effect */}
+          <motion.div
+            className="absolute rounded-full cursor-pointer"
+            animate={{
+              scale: isHovered ? 1.05 : 1,
+              opacity: isSelected ? 0.5 : isHovered ? 0.4 : 0.25,
+            }}
+            transition={{ type: "spring", stiffness: 300, damping: 20 }}
             style={{
               left: centerPos.x - scaledRadius,
               top: centerPos.y - scaledRadius,
@@ -584,45 +812,68 @@ export function GameCanvas({
               height: scaledRadius * 2,
               backgroundColor: tribe.color,
               border: `3px solid ${tribe.color}`,
+              boxShadow: isHovered ? `0 0 30px ${tribe.color}60` : `0 0 15px ${tribe.color}30`,
             }}
             onClick={() => onTribeClick?.(tribe.id)}
+            onMouseEnter={() => setHoveredTribe(tribe)}
+            onMouseLeave={() => setHoveredTribe(null)}
           />
 
-          {/* Tribe Info Card */}
-          <div
-            className="absolute bg-white/95 rounded-lg shadow-lg p-2 pointer-events-none"
-            style={{
-              left: centerPos.x - 60,
-              top: centerPos.y - 30,
-              minWidth: 120,
-            }}
-          >
-            <div
-              className="font-pixel text-sm font-bold text-center mb-1"
-              style={{ color: tribe.color }}
-            >
-              {tribe.name}
-            </div>
-            <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-[10px]">
-              <div className="flex items-center gap-1">
-                <span>👥</span>
-                <span>{tribePop}</span>
-              </div>
-              <div className="flex items-center gap-1">
-                <span>🍖</span>
-                <span>{Math.floor(tribe.food)}</span>
-              </div>
-              <div className="flex items-center gap-1">
-                <span>🪵</span>
-                <span>{Math.floor(tribe.wood)}</span>
-              </div>
-              <div className="flex items-center gap-1">
-                <span>🪨</span>
-                <span>{Math.floor(tribe.stone)}</span>
-              </div>
-            </div>
-          </div>
-        </div>
+          {/* Tribe Info Card - enhanced hover popup */}
+          <AnimatePresence>
+            {(isHovered || isSelected) && (
+              <motion.div
+                initial={{ opacity: 0, y: 10, scale: 0.9 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 10, scale: 0.9 }}
+                transition={{ type: "spring", stiffness: 400, damping: 25 }}
+                className="absolute bg-white/95 backdrop-blur-sm rounded-xl shadow-2xl p-3 pointer-events-none z-50"
+                style={{
+                  left: centerPos.x - 80,
+                  top: centerPos.y - 60,
+                  minWidth: 160,
+                  border: `2px solid ${tribe.color}`,
+                }}
+              >
+                <div
+                  className="font-pixel text-base font-bold text-center mb-2"
+                  style={{ color: tribe.color }}
+                >
+                  {tribe.name}
+                </div>
+                <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-base">👥</span>
+                    <span className="font-medium">{tribePop} people</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-base">🍖</span>
+                    <span className="font-medium">{Math.floor(tribe.food)}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-base">🪵</span>
+                    <span className="font-medium">{Math.floor(tribe.wood)}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-base">🪨</span>
+                    <span className="font-medium">{Math.floor(tribe.stone)}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 col-span-2">
+                    <span className="text-base">⚡</span>
+                    <span className="font-medium">{Math.floor(tribe.techPoints)} tech</span>
+                  </div>
+                </div>
+                {/* Status indicator */}
+                <div className="mt-2 pt-2 border-t border-gray-200 text-center text-xs">
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-100 text-green-800">
+                    <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>
+                    Thriving
+                  </span>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </motion.div>
       );
     }
 
@@ -630,10 +881,13 @@ export function GameCanvas({
     return (
       <div key={`tribe-${tribe.id}`}>
         {/* Territory Circle */}
-        <div
-          className={`absolute rounded-full transition-all duration-500 pointer-events-none ${
-            selectedTribeId === tribe.id ? "opacity-40" : "opacity-15"
-          }`}
+        <motion.div
+          className="absolute rounded-full pointer-events-none"
+          animate={{
+            opacity: isSelected ? 0.35 : 0.15,
+            scale: isHovered ? 1.02 : 1,
+          }}
+          transition={{ type: "spring", stiffness: 200, damping: 20 }}
           style={{
             left: centerPos.x - scaledRadius,
             top: centerPos.y - scaledRadius,
@@ -641,11 +895,12 @@ export function GameCanvas({
             height: scaledRadius * 2,
             backgroundColor: tribe.color,
             border: `3px dashed ${tribe.color}`,
+            boxShadow: `inset 0 0 50px ${tribe.color}20`,
           }}
         />
 
-        {/* Village Fire */}
-        <div
+        {/* Village Fire with hover effect */}
+        <motion.div
           className="absolute cursor-pointer group"
           style={{
             left: centerPos.x - 24 * camera.zoom,
@@ -653,22 +908,23 @@ export function GameCanvas({
             transform: `scale(${camera.zoom})`,
             transformOrigin: "center",
           }}
+          whileHover={{ scale: camera.zoom * 1.15 }}
+          transition={{ type: "spring", stiffness: 400, damping: 20 }}
           onClick={() => onTribeClick?.(tribe.id)}
+          onMouseEnter={() => setHoveredTribe(tribe)}
+          onMouseLeave={() => setHoveredTribe(null)}
         >
-          {/* Glow effect */}
           <div
             className="w-12 h-12 rounded-full animate-pulse blur-xl absolute"
             style={{ backgroundColor: `${tribe.color}40` }}
           />
-          {/* Fire emoji */}
           <div className="relative z-10 text-3xl text-center leading-[3rem]">
             🔥
           </div>
-          {/* Tribe name label */}
           <div
-            className={`absolute -bottom-5 left-1/2 -translate-x-1/2 whitespace-nowrap text-[10px] font-pixel px-2 py-0.5 rounded shadow-sm transition-opacity duration-200 ${
-              selectedTribeId === tribe.id
-                ? "opacity-100"
+            className={`absolute -bottom-5 left-1/2 -translate-x-1/2 whitespace-nowrap text-[10px] font-pixel px-2 py-0.5 rounded shadow-sm transition-all duration-200 ${
+              isSelected || isHovered
+                ? "opacity-100 scale-110"
                 : "opacity-0 group-hover:opacity-100"
             }`}
             style={{
@@ -678,20 +934,49 @@ export function GameCanvas({
           >
             {tribe.name}
           </div>
-          {/* Population badge */}
           <div
             className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-white shadow-md flex items-center justify-center text-[10px] font-bold"
             style={{ color: tribe.color }}
           >
             {tribePop}
           </div>
-        </div>
+        </motion.div>
+
+        {/* Detailed hover card in medium/detailed view */}
+        <AnimatePresence>
+          {isHovered && lodLevel !== "strategic" && (
+            <motion.div
+              initial={{ opacity: 0, y: 10, scale: 0.9 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 10, scale: 0.9 }}
+              className="absolute bg-white/95 backdrop-blur-sm rounded-lg shadow-xl p-2 pointer-events-none z-50"
+              style={{
+                left: centerPos.x + 30,
+                top: centerPos.y - 40,
+                minWidth: 140,
+                border: `2px solid ${tribe.color}`,
+              }}
+            >
+              <div className="font-pixel text-sm font-bold mb-1" style={{ color: tribe.color }}>
+                {tribe.name}
+              </div>
+              <div className="grid grid-cols-2 gap-1 text-[10px]">
+                <div>👥 {tribePop}</div>
+                <div>🍖 {Math.floor(tribe.food)}</div>
+                <div>🪵 {Math.floor(tribe.wood)}</div>
+                <div>🪨 {Math.floor(tribe.stone)}</div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     );
   };
 
   // Render world event
   const renderWorldEvent = (event: WorldEvent) => {
+    if (isPlanetView) return null;
+    
     const pos = toScreen(event.posX, event.posY);
     const scaledRadius = event.radius * camera.zoom;
 
@@ -705,6 +990,7 @@ export function GameCanvas({
         initial={{ scale: 0, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
         exit={{ scale: 0, opacity: 0 }}
+        transition={{ type: "spring", stiffness: 300, damping: 20 }}
         className="absolute pointer-events-none"
         style={{
           left: pos.x - scaledRadius,
@@ -713,7 +999,6 @@ export function GameCanvas({
           height: scaledRadius * 2,
         }}
       >
-        {/* Danger zone */}
         <div
           className={`w-full h-full rounded-full animate-pulse ${
             event.type === "wildAnimal"
@@ -729,7 +1014,6 @@ export function GameCanvas({
               : ""
           }`}
         />
-        {/* Event icon */}
         <div
           className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2"
           style={{ fontSize: `${Math.max(16, 24 * camera.zoom)}px` }}
@@ -749,9 +1033,11 @@ export function GameCanvas({
     const emoji = RESOURCE_EMOJIS[resource.type] || "📦";
 
     return (
-      <div
+      <motion.div
         key={`resource-${resource.id}`}
-        className="absolute pointer-events-none transition-transform"
+        className="absolute pointer-events-none"
+        initial={{ scale: 0 }}
+        animate={{ scale: 1 }}
         style={{
           left: pos.x - 10 * scale,
           top: pos.y - 10 * scale,
@@ -760,14 +1046,21 @@ export function GameCanvas({
         }}
       >
         {emoji}
-        {/* Amount indicator at detailed level */}
         {lodLevel === "detailed" && camera.zoom > 1.5 && (
           <div className="absolute -bottom-3 left-1/2 -translate-x-1/2 text-[8px] bg-black/50 text-white px-1 rounded">
             {resource.amount}
           </div>
         )}
-      </div>
+      </motion.div>
     );
+  };
+
+  // Get view mode label
+  const getViewModeLabel = () => {
+    if (isPlanetView) return "🌍 Planet View";
+    if (lodLevel === "strategic") return "📍 Strategic View";
+    if (lodLevel === "medium") return "🗺️ Regional View";
+    return "🔍 Detailed View";
   };
 
   return (
@@ -776,7 +1069,7 @@ export function GameCanvas({
       className="relative w-full h-[600px] overflow-hidden rounded-xl border-4 border-[#8b7355] shadow-inner select-none"
       style={{
         cursor: isDragging ? "grabbing" : "grab",
-        background: "#2d4a3e", // Base color for water areas
+        background: isPlanetView ? "#0a0a15" : "#2d4a3e",
       }}
       onWheel={handleWheel}
       onMouseDown={handleMouseDown}
@@ -784,22 +1077,35 @@ export function GameCanvas({
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
     >
+      {/* Planet View Canvas */}
+      <canvas
+        ref={planetCanvasRef}
+        className={`absolute inset-0 w-full h-full transition-opacity duration-500 ${
+          isPlanetView ? "opacity-100" : "opacity-0 pointer-events-none"
+        }`}
+      />
+
       {/* Terrain Canvas */}
       <canvas
         ref={terrainCanvasRef}
-        className="absolute inset-0 w-full h-full"
+        className={`absolute inset-0 w-full h-full transition-opacity duration-500 ${
+          isPlanetView ? "opacity-0 pointer-events-none" : "opacity-100"
+        }`}
       />
 
-      {/* World Boundary Indicator */}
-      <div
-        className="absolute border-4 border-dashed border-yellow-600/30 pointer-events-none"
-        style={{
-          left: worldToScreenX(0, camera, canvasSize.width),
-          top: worldToScreenY(0, camera, canvasSize.height),
-          width: WORLD_WIDTH * camera.zoom,
-          height: WORLD_HEIGHT * camera.zoom,
-        }}
-      />
+      {/* World Boundary Indicator (not in planet view) */}
+      {!isPlanetView && (
+        <motion.div
+          className="absolute border-4 border-dashed border-yellow-600/30 pointer-events-none"
+          animate={{
+            left: worldToScreenX(0, camera, canvasSize.width),
+            top: worldToScreenY(0, camera, canvasSize.height),
+            width: WORLD_WIDTH * camera.zoom,
+            height: WORLD_HEIGHT * camera.zoom,
+          }}
+          transition={{ type: "tween", duration: 0.05 }}
+        />
+      )}
 
       {/* Resources Layer */}
       {visibleResources.map(renderResource)}
@@ -817,24 +1123,114 @@ export function GameCanvas({
         {visibleVillagers.map(renderVillager)}
       </AnimatePresence>
 
-      {/* Map Legend */}
-      <div className="absolute bottom-4 left-4 bg-white/80 rounded-lg p-2 text-[10px] shadow-sm">
-        <div className="font-bold mb-1 text-muted-foreground">LEGEND</div>
-        <div className="space-y-0.5">
-          <div className="flex items-center gap-1">🔥 Tribe Center</div>
-          <div className="flex items-center gap-1">🌲 Forest</div>
-          <div className="flex items-center gap-1">🪨 Quarry</div>
-          <div className="flex items-center gap-1">🐺 Danger</div>
+      {/* Planet View Tribe Labels */}
+      {isPlanetView && (
+        <div className="absolute inset-0 pointer-events-none">
+          {tribes.map((tribe) => {
+            const normalizedX = (tribe.centerX / WORLD_WIDTH - 0.5) * 2;
+            const normalizedY = (tribe.centerY / WORLD_HEIGHT - 0.5) * 2;
+            const rotatedX = normalizedX * Math.cos(camera.rotation) - normalizedY * Math.sin(camera.rotation) * 0.2;
+            const rotatedY = normalizedY;
+            const dist = Math.sqrt(rotatedX * rotatedX + rotatedY * rotatedY);
+            
+            if (dist > 0.85) return null;
+            
+            const radius = Math.min(canvasSize.width, canvasSize.height) * 0.38;
+            const centerX = canvasSize.width / 2;
+            const centerY = canvasSize.height / 2;
+            const projX = centerX + rotatedX * radius;
+            const projY = centerY + rotatedY * radius;
+            const z = Math.sqrt(1 - Math.min(1, dist * dist));
+            
+            return (
+              <motion.div
+                key={`planet-tribe-${tribe.id}`}
+                className="absolute pointer-events-auto cursor-pointer"
+                initial={{ opacity: 0 }}
+                animate={{ 
+                  opacity: z > 0.3 ? 1 : 0,
+                  x: projX - 40,
+                  y: projY + 15,
+                }}
+                whileHover={{ scale: 1.1 }}
+                onClick={() => handleFocusTribe(tribe.id)}
+                style={{ zIndex: Math.floor(z * 100) }}
+              >
+                <div 
+                  className="px-2 py-1 rounded-lg text-white text-xs font-pixel whitespace-nowrap shadow-lg"
+                  style={{ 
+                    backgroundColor: `${tribe.color}dd`,
+                    transform: `scale(${0.7 + z * 0.3})`,
+                  }}
+                >
+                  {tribe.name}
+                </div>
+              </motion.div>
+            );
+          })}
         </div>
+      )}
+
+      {/* Map Legend */}
+      {!isPlanetView && (
+        <div className="absolute bottom-4 left-4 bg-white/80 backdrop-blur-sm rounded-lg p-2 text-[10px] shadow-sm">
+          <div className="font-bold mb-1 text-muted-foreground">LEGEND</div>
+          <div className="space-y-0.5">
+            <div className="flex items-center gap-1">🔥 Tribe Center</div>
+            <div className="flex items-center gap-1">🌲 Forest</div>
+            <div className="flex items-center gap-1">🪨 Quarry</div>
+            <div className="flex items-center gap-1">🐺 Danger</div>
+          </div>
+        </div>
+      )}
+
+      {/* View Mode Indicator */}
+      <div className="absolute top-4 left-4 bg-black/60 backdrop-blur-sm text-white px-3 py-1.5 rounded-lg text-xs font-mono flex items-center gap-2">
+        <span>{getViewModeLabel()}</span>
+        <span className="opacity-70">|</span>
+        <span className="opacity-70">{getZoomPercentage(camera.zoom)}%</span>
       </div>
 
-      {/* LOD Indicator */}
-      <div className="absolute top-4 left-4 bg-black/50 text-white px-2 py-1 rounded text-[10px] font-mono">
-        {lodLevel === "strategic" && "📍 Strategic View"}
-        {lodLevel === "medium" && "🗺️ Regional View"}
-        {lodLevel === "detailed" && "🔍 Detailed View"}
-        <span className="ml-2 opacity-70">{Math.round(camera.zoom * 100)}%</span>
-      </div>
+      {/* Planet View Rotation Controls */}
+      {isPlanetView && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2">
+          <motion.button
+            whileHover={{ scale: 1.1 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={handleRotateLeft}
+            className="w-10 h-10 bg-white/20 backdrop-blur-sm rounded-full flex items-center justify-center text-white hover:bg-white/30 transition-colors"
+          >
+            ↺
+          </motion.button>
+          <div className="px-3 py-1.5 bg-white/20 backdrop-blur-sm rounded-full text-white text-xs">
+            Drag to rotate
+          </div>
+          <motion.button
+            whileHover={{ scale: 1.1 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={handleRotateRight}
+            className="w-10 h-10 bg-white/20 backdrop-blur-sm rounded-full flex items-center justify-center text-white hover:bg-white/30 transition-colors"
+          >
+            ↻
+          </motion.button>
+        </div>
+      )}
+
+      {/* Planet View Instructions */}
+      {isPlanetView && (
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="absolute top-4 right-4 bg-white/10 backdrop-blur-sm text-white/80 px-3 py-2 rounded-lg text-xs max-w-[200px]"
+        >
+          <div className="font-bold mb-1">🌍 Planet View</div>
+          <div className="opacity-70 space-y-1">
+            <div>• Scroll to zoom in</div>
+            <div>• Click tribe to focus</div>
+            <div>• Drag to rotate</div>
+          </div>
+        </motion.div>
+      )}
 
       {/* Camera Controls */}
       <CameraControls
@@ -848,17 +1244,31 @@ export function GameCanvas({
         onStrategicView={handleStrategicView}
       />
 
-      {/* Mini Map */}
-      <MiniMap
-        camera={camera}
-        tribes={tribes}
-        villagers={villagers}
-        worldEvents={worldEvents}
-        terrain={terrain}
-        canvasWidth={canvasSize.width}
-        canvasHeight={canvasSize.height}
-        onNavigate={handleMiniMapNavigate}
-      />
+      {/* Mini Map (not in planet view) */}
+      {!isPlanetView && (
+        <MiniMap
+          camera={camera}
+          tribes={tribes}
+          villagers={villagers}
+          worldEvents={worldEvents}
+          terrain={terrain}
+          canvasWidth={canvasSize.width}
+          canvasHeight={canvasSize.height}
+          onNavigate={handleMiniMapNavigate}
+        />
+      )}
     </div>
   );
+}
+
+// Helper function to convert hex to RGB
+function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
+  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  return result
+    ? {
+        r: parseInt(result[1], 16),
+        g: parseInt(result[2], 16),
+        b: parseInt(result[3], 16),
+      }
+    : null;
 }
