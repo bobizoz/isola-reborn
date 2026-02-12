@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { useGameState, useSyncGame, useUpdateVillager } from "@/hooks/use-game-api";
 import { GameCanvas } from "@/components/GameCanvas";
 import { ResourceBar } from "@/components/ResourceBar";
@@ -12,6 +12,8 @@ import { Loader2, Plus, RotateCcw, Settings, ChevronLeft, ChevronRight, Pause, P
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
+import { CameraState, createCamera, focusOn } from "@/lib/camera";
+import { WorldTerrain, generateWorld } from "@/lib/world-generator";
 
 export default function Game() {
   const { data: serverData, isLoading } = useGameState();
@@ -32,6 +34,14 @@ export default function Game() {
   const [showSettings, setShowSettings] = useState(false);
   const [leftPanelOpen, setLeftPanelOpen] = useState(true);
   
+  // Camera state
+  const [camera, setCamera] = useState<CameraState>(createCamera());
+  
+  // World terrain (generated once)
+  const terrain = useMemo<WorldTerrain>(() => {
+    return generateWorld(42); // Fixed seed for consistent terrain
+  }, []);
+  
   // Refs for loop
   const requestRef = useRef<number>();
   const lastTimeRef = useRef<number>(0);
@@ -48,6 +58,9 @@ export default function Game() {
       // Auto-select first tribe
       if (serverData.tribes.length > 0 && !selectedTribeId) {
         setSelectedTribeId(serverData.tribes[0].id);
+        // Focus camera on first tribe
+        const firstTribe = serverData.tribes[0];
+        setCamera(focusOn(createCamera(), firstTribe.centerX, firstTribe.centerY, 1));
       }
     }
   }, [serverData]);
@@ -210,12 +223,22 @@ export default function Game() {
   const handleSelectTribe = (tribeId: number) => {
     setSelectedTribeId(tribeId);
     setSelectedVillagerId(null);
+    
+    // Focus camera on tribe
+    const tribe = tribes.find(t => t.id === tribeId);
+    if (tribe) {
+      setCamera(prev => focusOn(prev, tribe.centerX, tribe.centerY, 1.2));
+    }
   };
 
   const handleToggleSetting = (setting: 'immigrationEnabled' | 'tribeSplittingEnabled' | 'randomEventsEnabled') => {
     if (!gameState) return;
     setGameState(prev => prev ? { ...prev, [setting]: !prev[setting] } : null);
   };
+
+  const handleCameraChange = useCallback((newCamera: CameraState) => {
+    setCamera(newCamera);
+  }, []);
 
   // --- Render ---
   if (isLoading || !gameState) {
@@ -354,16 +377,18 @@ export default function Game() {
           </aside>
 
           {/* Center: Game World */}
-          <main className="flex-1">
+          <main className="flex-1 relative">
             <GameCanvas 
               villagers={villagers}
               tribes={tribes}
               worldEvents={worldEvents}
-              resources={RESOURCES}
+              terrain={terrain}
               onVillagerClick={(v) => setSelectedVillagerId(v.id)}
               selectedVillagerId={selectedVillagerId || undefined}
               selectedTribeId={selectedTribeId || undefined}
               onTribeClick={handleSelectTribe}
+              camera={camera}
+              onCameraChange={handleCameraChange}
             />
             
             {isPaused && (

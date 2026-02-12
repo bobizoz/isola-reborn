@@ -1,4 +1,5 @@
 import { GameState, Villager, Tribe, WorldEvent, GameEvent, VILLAGER_NAMES, TRIBE_COLORS, TRAIT_POOL } from "@shared/schema";
+import { WORLD_WIDTH, WORLD_HEIGHT } from "./camera";
 
 /**
  * Enhanced Game Engine with:
@@ -7,6 +8,7 @@ import { GameState, Villager, Tribe, WorldEvent, GameEvent, VILLAGER_NAMES, TRIB
  * - Tribe splitting mechanics  
  * - Survival mechanics (random events, deaths, avoidance)
  * - Resource management per tribe
+ * - Support for larger world (1600x1200)
  */
 
 // === CONSTANTS ===
@@ -14,8 +16,8 @@ const MOVEMENT_SPEED = 2;
 const HUNGER_RATE = 0.04;
 const ENERGY_RATE = 0.025;
 const HEALING_RATE = 0.15;
-const MAP_WIDTH = 800;
-const MAP_HEIGHT = 600;
+const MAP_WIDTH = WORLD_WIDTH;
+const MAP_HEIGHT = WORLD_HEIGHT;
 
 // Immigration settings
 const IMMIGRATION_CHANCE_PER_TICK = 0.0003; // ~once per 3000 ticks
@@ -34,19 +36,31 @@ const DISEASE_SPREAD_CHANCE = 0.1;
 const WILDLIFE_ATTACK_CHANCE = 0.0001;
 const ACCIDENT_CHANCE = 0.00005;
 
-// World resources (static locations)
+// World resources (static locations - spread across larger world)
 const RESOURCES = {
   trees: [
-    { x: 100, y: 100 }, { x: 150, y: 50 }, { x: 50, y: 150 },
-    { x: 700, y: 500 }, { x: 650, y: 550 }, { x: 720, y: 450 },
-    { x: 200, y: 400 }, { x: 180, y: 450 },
+    // Northwest forest
+    { x: 100, y: 100 }, { x: 150, y: 50 }, { x: 50, y: 150 }, { x: 180, y: 120 },
+    { x: 200, y: 80 }, { x: 130, y: 180 }, { x: 80, y: 220 },
+    // Southeast forest
+    { x: 1400, y: 1000 }, { x: 1350, y: 1050 }, { x: 1420, y: 950 }, { x: 1480, y: 1020 },
+    { x: 1500, y: 1100 }, { x: 1320, y: 980 },
+    // Central forest
+    { x: 600, y: 500 }, { x: 650, y: 480 }, { x: 580, y: 540 }, { x: 700, y: 520 },
+    // Southwest
+    { x: 200, y: 900 }, { x: 180, y: 950 }, { x: 250, y: 880 },
+    // Northeast
+    { x: 1200, y: 200 }, { x: 1250, y: 180 }, { x: 1180, y: 250 },
   ],
   rocks: [
-    { x: 600, y: 100 }, { x: 700, y: 50 }, { x: 750, y: 120 },
-    { x: 100, y: 500 }, { x: 50, y: 550 },
+    // Mountains in various locations
+    { x: 1200, y: 100 }, { x: 1300, y: 50 }, { x: 1350, y: 120 }, { x: 1250, y: 150 },
+    { x: 100, y: 800 }, { x: 50, y: 850 }, { x: 150, y: 780 },
+    { x: 800, y: 200 }, { x: 850, y: 180 }, { x: 780, y: 230 },
+    { x: 900, y: 900 }, { x: 950, y: 880 }, { x: 870, y: 930 },
   ],
   waterSources: [
-    { x: 750, y: 300 },
+    { x: 1500, y: 600 }, { x: 100, y: 600 }, { x: 800, y: 100 }, { x: 800, y: 1100 },
   ],
   dangers: [] as { x: number; y: number; type: string; severity: number }[],
 };
@@ -265,18 +279,26 @@ export function advanceGameTick(
         
         if (roll < p.priorityFarming) {
           villager.action = 'farming';
-          villager.targetX = tribe.centerX - 80 + Math.random() * 40;
-          villager.targetY = tribe.centerY + 40 + Math.random() * 40;
+          villager.targetX = tribe.centerX - 80 + Math.random() * 160;
+          villager.targetY = tribe.centerY + 40 + Math.random() * 80;
         } else if (roll < p.priorityFarming + p.priorityBuilding) {
           villager.action = 'building';
-          const rock = RESOURCES.rocks[Math.floor(Math.random() * RESOURCES.rocks.length)];
-          villager.targetX = rock.x;
-          villager.targetY = rock.y;
+          // Find nearest rock
+          const nearestRock = RESOURCES.rocks.reduce((nearest, rock) => {
+            const d = dist(tribe.centerX, tribe.centerY, rock.x, rock.y);
+            return d < nearest.dist ? { rock, dist: d } : nearest;
+          }, { rock: RESOURCES.rocks[0], dist: Infinity });
+          villager.targetX = nearestRock.rock.x;
+          villager.targetY = nearestRock.rock.y;
         } else if (roll < p.priorityFarming + p.priorityBuilding + p.priorityGathering) {
           villager.action = 'gathering';
-          const tree = RESOURCES.trees[Math.floor(Math.random() * RESOURCES.trees.length)];
-          villager.targetX = tree.x;
-          villager.targetY = tree.y;
+          // Find nearest tree
+          const nearestTree = RESOURCES.trees.reduce((nearest, tree) => {
+            const d = dist(tribe.centerX, tribe.centerY, tree.x, tree.y);
+            return d < nearest.dist ? { tree, dist: d } : nearest;
+          }, { tree: RESOURCES.trees[0], dist: Infinity });
+          villager.targetX = nearestTree.tree.x;
+          villager.targetY = nearestTree.tree.y;
         } else {
           villager.action = 'research';
           villager.targetX = tribe.centerX;
@@ -400,17 +422,17 @@ export function advanceGameTick(
         const splitCount = 2 + Math.floor(Math.random() * 2);
         const splitters = tribePop.slice(0, splitCount);
         
-        // Find a new location for the tribe
-        let newCenterX: number = 400;
-        let newCenterY: number = 300;
+        // Find a new location for the tribe (spread across larger world)
+        let newCenterX: number = MAP_WIDTH / 2;
+        let newCenterY: number = MAP_HEIGHT / 2;
         let attempts = 0;
         do {
-          newCenterX = 100 + Math.random() * (MAP_WIDTH - 200);
-          newCenterY = 100 + Math.random() * (MAP_HEIGHT - 200);
+          newCenterX = 150 + Math.random() * (MAP_WIDTH - 300);
+          newCenterY = 150 + Math.random() * (MAP_HEIGHT - 300);
           attempts++;
         } while (
-          attempts < 20 && 
-          newTribes.some(t => dist(t.centerX, t.centerY, newCenterX, newCenterY) < 200)
+          attempts < 30 && 
+          newTribes.some(t => dist(t.centerX, t.centerY, newCenterX, newCenterY) < 300)
         );
         
         // Create new tribe
@@ -431,7 +453,7 @@ export function advanceGameTick(
           techPoints: Math.floor(tribe.techPoints * 0.2),
           centerX: Math.round(newCenterX),
           centerY: Math.round(newCenterY),
-          territoryRadius: 120,
+          territoryRadius: 150,
           priorityFarming: tribe.priorityFarming,
           priorityBuilding: tribe.priorityBuilding,
           priorityResearch: tribe.priorityResearch,
@@ -457,8 +479,8 @@ export function advanceGameTick(
           const vIdx = newVillagers.findIndex(v => v.id === splitter.id);
           if (vIdx !== -1) {
             newVillagers[vIdx].tribeId = newTribeId;
-            newVillagers[vIdx].posX = newCenterX + (Math.random() - 0.5) * 40;
-            newVillagers[vIdx].posY = newCenterY + (Math.random() - 0.5) * 40;
+            newVillagers[vIdx].posX = newCenterX + (Math.random() - 0.5) * 60;
+            newVillagers[vIdx].posY = newCenterY + (Math.random() - 0.5) * 60;
           }
         }
         
@@ -607,8 +629,8 @@ export function spawnVillager(tribe: Tribe): Villager {
     pregnancyProgress: 0,
     skinColor: randomSkinColor(),
     hairColor: randomHairColor(),
-    posX: tribe.centerX + (Math.random() - 0.5) * 60,
-    posY: tribe.centerY + (Math.random() - 0.5) * 60,
+    posX: tribe.centerX + (Math.random() - 0.5) * 80,
+    posY: tribe.centerY + (Math.random() - 0.5) * 80,
     traits: randomTraits(2),
     thought: "Summoned by the gods!",
     causeOfDeath: null,

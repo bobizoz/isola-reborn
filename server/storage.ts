@@ -92,7 +92,8 @@ export class DatabaseStorage implements IStorage {
   }
   
   async seedInitialData() {
-    // Create the initial player tribe
+    // World dimensions: 1600x1200 (from camera.ts WORLD_WIDTH/HEIGHT)
+    // Create the initial player tribe - positioned in center-west area
     const [playerTribe] = await db.insert(tribes).values({
       name: "The First Tribe",
       color: TRIBE_COLORS[0],
@@ -100,9 +101,9 @@ export class DatabaseStorage implements IStorage {
       wood: 75,
       stone: 25,
       techPoints: 0,
-      centerX: 400,
-      centerY: 300,
-      territoryRadius: 150,
+      centerX: 600,  // Positioned in center-west of 1600-wide world
+      centerY: 500,  // Positioned in center of 1200-high world
+      territoryRadius: 180,
       isPlayerTribe: true,
       foundedTick: 0,
     }).returning();
