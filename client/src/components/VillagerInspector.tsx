@@ -1,14 +1,16 @@
-import { Villager } from "@shared/schema";
-import { Heart, Activity, Utensils, Smile, X } from "lucide-react";
+import { Villager, Tribe } from "@shared/schema";
+import { Heart, Activity, Utensils, Smile, X, Swords, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 
 interface InspectorProps {
   villager: Villager | null;
+  tribe: Tribe | null;
   onClose: () => void;
   onHeal: (id: number) => void;
 }
 
-export function VillagerInspector({ villager, onClose, onHeal }: InspectorProps) {
+export function VillagerInspector({ villager, tribe, onClose, onHeal }: InspectorProps) {
   if (!villager) return null;
 
   return (
@@ -19,6 +21,15 @@ export function VillagerInspector({ villager, onClose, onHeal }: InspectorProps)
           <p className="text-sm font-retro text-muted-foreground uppercase">
             {villager.gender} • {villager.age} Years Old
           </p>
+          {tribe && (
+            <div className="flex items-center gap-1.5 mt-1">
+              <div 
+                className="w-3 h-3 rounded-full"
+                style={{ backgroundColor: tribe.color }}
+              />
+              <span className="text-xs text-muted-foreground">{tribe.name}</span>
+            </div>
+          )}
         </div>
         <button onClick={onClose} className="hover:bg-black/10 rounded p-1">
           <X className="w-4 h-4" />
@@ -26,6 +37,24 @@ export function VillagerInspector({ villager, onClose, onHeal }: InspectorProps)
       </div>
 
       <div className="space-y-4">
+        {/* Traits */}
+        {villager.traits && villager.traits.length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            {villager.traits.map((trait, i) => (
+              <Badge key={i} variant="secondary" className="text-[10px]">
+                {trait}
+              </Badge>
+            ))}
+          </div>
+        )}
+
+        {/* Thought bubble */}
+        {villager.thought && (
+          <div className="bg-black/5 p-2 rounded text-xs italic text-muted-foreground">
+            💭 "{villager.thought}"
+          </div>
+        )}
+
         {/* Vitals */}
         <div className="grid grid-cols-2 gap-2 text-sm">
           <VitalRow 
@@ -44,7 +73,7 @@ export function VillagerInspector({ villager, onClose, onHeal }: InspectorProps)
           />
           <VitalRow 
             icon={<Utensils className="w-4 h-4 text-orange-500" />} 
-            label="Hunger" 
+            label="Satiety" 
             value={100 - villager.hunger} 
             max={100}
             color="bg-orange-500"
@@ -59,9 +88,14 @@ export function VillagerInspector({ villager, onClose, onHeal }: InspectorProps)
         </div>
 
         {/* Current State */}
-        <div className="bg-black/5 p-2 rounded">
-          <p className="text-xs font-bold uppercase text-muted-foreground">Current Action</p>
-          <p className="font-retro text-xl capitalize">{villager.action}</p>
+        <div className="bg-black/5 p-2 rounded flex items-center justify-between">
+          <div>
+            <p className="text-xs font-bold uppercase text-muted-foreground">Current Action</p>
+            <p className="font-retro text-xl capitalize">{villager.action}</p>
+          </div>
+          {villager.action === 'fleeing' && (
+            <span className="text-2xl animate-bounce">😱</span>
+          )}
         </div>
 
         {/* Skills */}
@@ -73,11 +107,12 @@ export function VillagerInspector({ villager, onClose, onHeal }: InspectorProps)
             <SkillBar label="Research" value={villager.skillResearch} />
             <SkillBar label="Gathering" value={villager.skillGathering} />
             <SkillBar label="Healing" value={villager.skillHealing} />
+            <SkillBar label="Combat" value={villager.skillCombat} icon={<Swords className="w-3 h-3" />} />
           </div>
         </div>
 
         {/* Actions */}
-        <div className="pt-2">
+        <div className="pt-2 space-y-2">
           <Button 
             variant="outline" 
             className="w-full retro-btn text-xs font-pixel py-4 border-2"
@@ -85,7 +120,7 @@ export function VillagerInspector({ villager, onClose, onHeal }: InspectorProps)
             disabled={villager.health >= 100}
           >
             <Heart className="w-4 h-4 mr-2" />
-            Heal Villager (-10 MP)
+            Divine Heal (-10 Tech)
           </Button>
         </div>
       </div>
@@ -93,26 +128,44 @@ export function VillagerInspector({ villager, onClose, onHeal }: InspectorProps)
   );
 }
 
-function VitalRow({ icon, label, value, max, color }: any) {
+function VitalRow({ icon, label, value, max, color }: {
+  icon: React.ReactNode;
+  label: string;
+  value: number;
+  max: number;
+  color: string;
+}) {
+  const percentage = Math.max(0, Math.min(100, (value / max) * 100));
+  
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
         {icon}
         <span>{label}</span>
+        <span className="ml-auto font-mono">{Math.round(value)}</span>
       </div>
       <div className="h-1.5 w-full bg-gray-200 rounded-full overflow-hidden">
-        <div className={`h-full ${color}`} style={{ width: `${(value / max) * 100}%` }} />
+        <div 
+          className={`h-full transition-all duration-300 ${color}`} 
+          style={{ width: `${percentage}%` }} 
+        />
       </div>
     </div>
   );
 }
 
-function SkillBar({ label, value }: { label: string, value: number }) {
+function SkillBar({ label, value, icon }: { label: string; value: number; icon?: React.ReactNode }) {
   return (
     <div className="flex items-center justify-between">
-      <span className="w-20 font-retro uppercase text-muted-foreground">{label}</span>
+      <span className="w-20 font-retro uppercase text-muted-foreground flex items-center gap-1">
+        {icon}
+        {label}
+      </span>
       <div className="flex-1 mx-2 h-2 bg-gray-200 rounded-sm overflow-hidden border border-black/10">
-        <div className="h-full bg-primary" style={{ width: `${value}%` }} />
+        <div 
+          className="h-full bg-primary transition-all duration-300" 
+          style={{ width: `${value}%` }} 
+        />
       </div>
       <span className="w-6 text-right font-mono">{value}</span>
     </div>

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { insertVillagerSchema, insertGameStateSchema, villagers, gameState } from './schema';
+import { insertVillagerSchema, insertGameStateSchema, insertTribeSchema, villagers, gameState, tribes, worldEvents } from './schema';
 
 export const errorSchemas = {
   validation: z.object({
@@ -22,7 +22,9 @@ export const api = {
       responses: {
         200: z.object({
           gameState: z.custom<typeof gameState.$inferSelect>(),
+          tribes: z.array(z.custom<typeof tribes.$inferSelect>()),
           villagers: z.array(z.custom<typeof villagers.$inferSelect>()),
+          worldEvents: z.array(z.custom<typeof worldEvents.$inferSelect>()),
         }),
       },
     },
@@ -31,6 +33,7 @@ export const api = {
       path: '/api/game/sync' as const,
       input: z.object({
         gameState: insertGameStateSchema.partial(),
+        tribes: z.array(insertTribeSchema.extend({ id: z.number().optional() })),
         villagers: z.array(insertVillagerSchema.extend({ id: z.number().optional() })),
       }),
       responses: {
@@ -44,6 +47,32 @@ export const api = {
         200: z.object({ success: z.boolean() }),
       },
     }
+  },
+  tribes: {
+    create: {
+      method: 'POST' as const,
+      path: '/api/tribes' as const,
+      input: insertTribeSchema,
+      responses: {
+        201: z.custom<typeof tribes.$inferSelect>(),
+      },
+    },
+    update: {
+      method: 'PATCH' as const,
+      path: '/api/tribes/:id' as const,
+      input: insertTribeSchema.partial(),
+      responses: {
+        200: z.custom<typeof tribes.$inferSelect>(),
+        404: errorSchemas.notFound,
+      },
+    },
+    delete: {
+      method: 'DELETE' as const,
+      path: '/api/tribes/:id' as const,
+      responses: {
+        204: z.void(),
+      },
+    },
   },
   villagers: {
     create: {

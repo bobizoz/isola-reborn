@@ -9,7 +9,7 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
 
-  // Get full game state
+  // Get full game state (includes tribes and events now)
   app.get(api.game.get.path, async (req, res) => {
     try {
       const data = await storage.getGameState();
@@ -20,11 +20,11 @@ export async function registerRoutes(
     }
   });
 
-  // Sync / Save game
+  // Sync / Save game (includes tribes now)
   app.post(api.game.sync.path, async (req, res) => {
     try {
-      const { gameState, villagers } = req.body;
-      await storage.syncGame(gameState, villagers);
+      const { gameState, tribes, villagers } = req.body;
+      await storage.syncGame(gameState, tribes || [], villagers || []);
       res.json({ success: true });
     } catch (err) {
       console.error(err);
@@ -36,6 +36,39 @@ export async function registerRoutes(
   app.post(api.game.reset.path, async (req, res) => {
     await storage.resetGame();
     res.json({ success: true });
+  });
+
+  // Tribe CRUD
+  app.post(api.tribes.create.path, async (req, res) => {
+    try {
+      const input = api.tribes.create.input.parse(req.body);
+      const tribe = await storage.createTribe(input);
+      res.status(201).json(tribe);
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        res.status(400).json({ message: err.errors[0].message });
+      } else {
+        res.status(500).json({ message: "Internal server error" });
+      }
+    }
+  });
+
+  app.patch(api.tribes.update.path, async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const input = api.tribes.update.input.parse(req.body);
+      const tribe = await storage.updateTribe(id, input);
+      if (!tribe) return res.status(404).json({ message: "Tribe not found" });
+      res.json(tribe);
+    } catch (err) {
+      res.status(400).json({ message: "Invalid update" });
+    }
+  });
+
+  app.delete(api.tribes.delete.path, async (req, res) => {
+    const id = parseInt(req.params.id);
+    await storage.deleteTribe(id);
+    res.status(204).send();
   });
 
   // Villager CRUD
