@@ -1,9 +1,4 @@
-import { db } from "./db";
 import {
-  villagers,
-  gameState,
-  tribes,
-  worldEvents,
   type Villager,
   type InsertVillager,
   type GameState,
@@ -16,7 +11,35 @@ import {
   TRIBE_COLORS,
   TRAIT_POOL,
 } from "@shared/schema";
-import { eq } from "drizzle-orm";
+import { MemoryStorage } from "./memory-storage";
+
+// Try to import database, but fallback to memory if not available
+let db: any = null;
+let eq: any = null;
+let villagers: any = null;
+let gameState: any = null;
+let tribes: any = null;
+let worldEvents: any = null;
+
+async function initDb() {
+  try {
+    if (process.env.DATABASE_URL) {
+      const dbModule = await import("./db");
+      db = dbModule.db;
+      const drizzleOrm = await import("drizzle-orm");
+      eq = drizzleOrm.eq;
+      const schema = await import("@shared/schema");
+      villagers = schema.villagers;
+      gameState = schema.gameState;
+      tribes = schema.tribes;
+      worldEvents = schema.worldEvents;
+      return true;
+    }
+  } catch (e) {
+    console.log("Database not available, using memory storage");
+  }
+  return false;
+}
 
 export interface IStorage {
   // Game State
@@ -276,4 +299,16 @@ export class DatabaseStorage implements IStorage {
   }
 }
 
-export const storage = new DatabaseStorage();
+// Create storage - use memory by default for CodeSandbox compatibility
+// Database will be used if DATABASE_URL is set
+let storage: IStorage;
+
+if (process.env.DATABASE_URL) {
+  console.log("Using database storage");
+  storage = new DatabaseStorage();
+} else {
+  console.log("Using in-memory storage (no database)");
+  storage = new MemoryStorage();
+}
+
+export { storage };
