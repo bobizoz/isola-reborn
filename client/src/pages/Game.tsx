@@ -6,14 +6,26 @@ import { PriorityPanel } from "@/components/PriorityPanel";
 import { VillagerInspector } from "@/components/VillagerInspector";
 import { TribesOverview } from "@/components/TribesOverview";
 import { EventLog } from "@/components/EventLog";
+import { BuildingPanel } from "@/components/BuildingPanel";
+import { SoundSettingsPanel, SoundToggleButton } from "@/components/SoundSettings";
 import { advanceGameTick, spawnVillager, RESOURCES } from "@/lib/game-engine";
 import { GameState, Villager, Tribe, WorldEvent, GameEvent } from "@shared/schema";
-import { Loader2, Plus, RotateCcw, Settings, ChevronLeft, ChevronRight, Pause, Play } from "lucide-react";
+import { Loader2, Plus, RotateCcw, Settings, ChevronLeft, ChevronRight, Pause, Play, Volume2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { CameraState, createCamera, focusOn } from "@/lib/camera";
 import { WorldTerrain, generateWorld } from "@/lib/world-generator";
+import { 
+  Building, 
+  BuildingType, 
+  createBuilding, 
+  updateBuildingConstruction,
+  canAffordBuilding,
+  isValidBuildingPosition,
+  BUILDING_DEFINITIONS,
+} from "@/lib/buildings";
+import { useSound, SoundSettings, DEFAULT_SOUND_SETTINGS } from "@/hooks/use-sound";
 
 export default function Game() {
   const { data: serverData, isLoading } = useGameState();
@@ -36,6 +48,28 @@ export default function Game() {
   
   // Camera state
   const [camera, setCamera] = useState<CameraState>(createCamera());
+  
+  // Building state
+  const [buildings, setBuildings] = useState<Building[]>([]);
+  const [selectedBuildingType, setSelectedBuildingType] = useState<BuildingType | null>(null);
+  const [isPlacingBuilding, setIsPlacingBuilding] = useState(false);
+  
+  // Sound state
+  const [soundSettings, setSoundSettings] = useState<SoundSettings>(DEFAULT_SOUND_SETTINGS);
+  const { 
+    isInitialized: soundInitialized,
+    isMuted,
+    updateAmbientSounds,
+    playActionSound,
+    playEventSound,
+    playBuildingSound,
+    playUISound,
+    toggleMute,
+    setCategoryVolume,
+  } = useSound({ 
+    enabled: true, 
+    masterVolume: soundSettings.masterVolume 
+  });
   
   // World terrain (generated once)
   const terrain = useMemo<WorldTerrain>(() => {
@@ -65,6 +99,13 @@ export default function Game() {
     }
   }, [serverData]);
 
+  // --- Update ambient sounds when camera changes ---
+  useEffect(() => {
+    if (soundInitialized) {
+      updateAmbientSounds(camera);
+    }
+  }, [camera.zoom, soundInitialized, updateAmbientSounds]);
+
   // --- Game Loop ---
   const animate = useCallback((time: number) => {
     if (!isPaused && lastTimeRef.current && gameState && tribes.length > 0) {
@@ -78,12 +119,50 @@ export default function Game() {
         setVillagers(result.newVillagers);
         setWorldEvents(result.newEvents);
         
+        // Update building construction progress
+        setBuildings(prevBuildings => {
+          let buildingsUpdated = false;
+          const newBuildings = prevBuildings.map(building => {
+            if (building.isComplete) return building;
+            
+            // Count workers near the building (villagers with 'building' action near this building)
+            const workers = villagers.filter(v => 
+              v.tribeId === building.tribeId && 
+              v.action === 'building' &&
+              Math.sqrt(Math.pow(v.posX - building.posX, 2) + Math.pow(v.posY - building.posY, 2)) < 100
+            );
+            
+            const wasComplete = building.isComplete;
+            const updated = updateBuildingConstruction(building, workers.length, result.newState.gameTick);
+            
+            // Play sounds for construction progress
+            if (!wasComplete && updated.isComplete) {
+              playBuildingSound('complete', building.posX, building.posY, camera);
+              buildingsUpdated = true;
+              toast({
+                title: "🏗️ Building Complete!",
+                description: `${BUILDING_DEFINITIONS[building.type].name} has been completed!`,
+                duration: 3000,
+              });
+            } else if (workers.length > 0 && Math.random() > 0.97) {
+              playBuildingSound('progress', building.posX, building.posY, camera);
+            }
+            
+            return { ...updated, workersAssigned: workers.map(w => w.id) };
+          });
+          
+          return newBuildings;
+        });
+        
         // Add new events to log
         if (result.gameEvents.length > 0) {
           setGameEvents(prev => [...prev, ...result.gameEvents].slice(-100)); // Keep last 100
           
-          // Show toast for important events
+          // Show toast and play sounds for important events
           result.gameEvents.forEach(event => {
+            // Play event sound
+            playEventSound(event);
+            
             if (event.type === 'death') {
               toast({
                 title: "☠️ A villager has died",
@@ -126,7 +205,7 @@ export default function Game() {
       lastTimeRef.current = time;
     }
     requestRef.current = requestAnimationFrame(animate);
-  }, [gameState, tribes, villagers, worldEvents, isPaused, toast]);
+  }, [gameState, tribes, villagers, worldEvents, isPaused, toast, playEventSound, playBuildingSound, camera]);
 
   useEffect(() => {
     requestRef.current = requestAnimationFrame(animate);
@@ -240,6 +319,108 @@ export default function Game() {
     setCamera(newCamera);
   }, []);
 
+  // --- Building handlers ---
+  const handleSelectBuildingType = useCallback((type: BuildingType | null) => {
+    if (type) {
+      setSelectedBuildingType(type);
+      setIsPlacingBuilding(true);
+      playUISound('click');
+    } else {
+      setSelectedBuildingType(null);
+      setIsPlacingBuilding(false);
+    }
+  }, [playUISound]);
+
+  const handlePlaceBuilding = useCallback((worldX: number, worldY: number) => {
+    if (!selectedBuildingType || !selectedTribeId) return;
+    
+    const tribe = tribes.find(t => t.id === selectedTribeId);
+    if (!tribe) return;
+    
+    // Check if can afford
+    if (!canAffordBuilding(tribe, selectedBuildingType)) {
+      toast({
+        title: "Not enough resources!",
+        description: "Gather more resources to construct this building.",
+        variant: "destructive",
+      });
+      return;
+    }
+    
+    // Check valid position
+    if (!isValidBuildingPosition(
+      worldX, 
+      worldY, 
+      selectedBuildingType, 
+      buildings,
+      { x: tribe.centerX, y: tribe.centerY, radius: tribe.territoryRadius }
+    )) {
+      toast({
+        title: "Invalid location!",
+        description: "Buildings must be placed within your tribe's territory.",
+        variant: "destructive",
+      });
+      return;
+    }
+    
+    const def = BUILDING_DEFINITIONS[selectedBuildingType];
+    
+    // Deduct resources
+    setTribes(prev => prev.map(t => 
+      t.id === selectedTribeId ? {
+        ...t,
+        wood: t.wood - def.cost.wood,
+        stone: t.stone - def.cost.stone,
+        food: t.food - def.cost.food,
+      } : t
+    ));
+    
+    // Create building
+    const newBuilding = createBuilding(
+      selectedTribeId,
+      selectedBuildingType,
+      worldX,
+      worldY,
+      gameState?.gameTick || 0
+    );
+    
+    setBuildings(prev => [...prev, newBuilding]);
+    
+    // Play sound and show toast
+    playBuildingSound('start', worldX, worldY, camera);
+    playUISound('success');
+    
+    toast({
+      title: "🏗️ Construction started!",
+      description: `Building ${def.name}...`,
+      duration: 2000,
+    });
+    
+    // Reset placement mode
+    setSelectedBuildingType(null);
+    setIsPlacingBuilding(false);
+  }, [selectedBuildingType, selectedTribeId, tribes, buildings, gameState, camera, playBuildingSound, playUISound, toast]);
+
+  const handleCancelPlacement = useCallback(() => {
+    setSelectedBuildingType(null);
+    setIsPlacingBuilding(false);
+  }, []);
+
+  // --- Villager action sound handler ---
+  const handleVillagerAction = useCallback((villager: Villager) => {
+    playActionSound(villager, camera);
+  }, [playActionSound, camera]);
+
+  // --- Sound settings handlers ---
+  const handleSoundSettingsChange = useCallback((settings: SoundSettings) => {
+    setSoundSettings(settings);
+  }, []);
+
+  const handleToggleMute = useCallback(() => {
+    const newMuted = toggleMute();
+    setSoundSettings(prev => ({ ...prev, isMuted: newMuted ?? false }));
+  }, [toggleMute]);
+
   // --- Render ---
   if (isLoading || !gameState) {
     return (
@@ -279,6 +460,11 @@ export default function Game() {
               {isPaused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
             </Button>
             
+            <SoundToggleButton 
+              isMuted={isMuted} 
+              onClick={handleToggleMute} 
+            />
+            
             <Button 
               variant="outline" 
               size="sm"
@@ -305,29 +491,45 @@ export default function Game() {
         {/* Settings Panel */}
         {showSettings && (
           <div className="retro-box p-4 animate-in slide-in-from-top-2">
-            <h3 className="font-pixel text-sm mb-3">World Settings</h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <label className="flex items-center justify-between">
-                <span className="text-sm">Natural Immigration</span>
-                <Switch 
-                  checked={gameState.immigrationEnabled} 
-                  onCheckedChange={() => handleToggleSetting('immigrationEnabled')} 
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* World Settings */}
+              <div>
+                <h3 className="font-pixel text-sm mb-3">World Settings</h3>
+                <div className="space-y-3">
+                  <label className="flex items-center justify-between">
+                    <span className="text-sm">Natural Immigration</span>
+                    <Switch 
+                      checked={gameState.immigrationEnabled} 
+                      onCheckedChange={() => handleToggleSetting('immigrationEnabled')} 
+                    />
+                  </label>
+                  <label className="flex items-center justify-between">
+                    <span className="text-sm">Tribe Splitting</span>
+                    <Switch 
+                      checked={gameState.tribeSplittingEnabled} 
+                      onCheckedChange={() => handleToggleSetting('tribeSplittingEnabled')} 
+                    />
+                  </label>
+                  <label className="flex items-center justify-between">
+                    <span className="text-sm">Random Events</span>
+                    <Switch 
+                      checked={gameState.randomEventsEnabled} 
+                      onCheckedChange={() => handleToggleSetting('randomEventsEnabled')} 
+                    />
+                  </label>
+                </div>
+              </div>
+              
+              {/* Sound Settings */}
+              <div>
+                <h3 className="font-pixel text-sm mb-3">Sound Settings</h3>
+                <SoundSettingsPanel
+                  settings={soundSettings}
+                  onSettingsChange={handleSoundSettingsChange}
+                  onCategoryVolumeChange={setCategoryVolume}
+                  onToggleMute={handleToggleMute}
                 />
-              </label>
-              <label className="flex items-center justify-between">
-                <span className="text-sm">Tribe Splitting</span>
-                <Switch 
-                  checked={gameState.tribeSplittingEnabled} 
-                  onCheckedChange={() => handleToggleSetting('tribeSplittingEnabled')} 
-                />
-              </label>
-              <label className="flex items-center justify-between">
-                <span className="text-sm">Random Events</span>
-                <Switch 
-                  checked={gameState.randomEventsEnabled} 
-                  onCheckedChange={() => handleToggleSetting('randomEventsEnabled')} 
-                />
-              </label>
+              </div>
             </div>
           </div>
         )}
@@ -368,6 +570,14 @@ export default function Game() {
                   onSelectTribe={handleSelectTribe}
                 />
                 
+                <BuildingPanel
+                  tribe={selectedTribe}
+                  buildings={buildings}
+                  onSelectBuilding={handleSelectBuildingType}
+                  selectedBuildingType={selectedBuildingType}
+                  isPlacingBuilding={isPlacingBuilding}
+                />
+                
                 <EventLog 
                   events={gameEvents}
                   currentTick={gameState.gameTick}
@@ -383,12 +593,18 @@ export default function Game() {
               tribes={tribes}
               worldEvents={worldEvents}
               terrain={terrain}
+              buildings={buildings}
               onVillagerClick={(v) => setSelectedVillagerId(v.id)}
               selectedVillagerId={selectedVillagerId || undefined}
               selectedTribeId={selectedTribeId || undefined}
               onTribeClick={handleSelectTribe}
               camera={camera}
               onCameraChange={handleCameraChange}
+              isPlacingBuilding={isPlacingBuilding}
+              placingBuildingType={selectedBuildingType}
+              onPlaceBuilding={handlePlaceBuilding}
+              onCancelPlacement={handleCancelPlacement}
+              onVillagerAction={handleVillagerAction}
             />
             
             {isPaused && (

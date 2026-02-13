@@ -41,17 +41,35 @@ import {
 import { MiniMap } from "./MiniMap";
 import { CameraControls } from "./CameraControls";
 
+import { 
+  Building, 
+  BuildingType, 
+  BUILDING_DEFINITIONS, 
+  ConstructionParticle,
+  createConstructionParticle,
+  updateParticle,
+  isValidBuildingPosition,
+} from "@/lib/buildings";
+
 interface GameCanvasProps {
   villagers: Villager[];
   tribes: Tribe[];
   worldEvents: WorldEvent[];
   terrain: WorldTerrain;
+  buildings: Building[];
   onVillagerClick: (villager: Villager) => void;
   selectedVillagerId?: number;
   selectedTribeId?: number;
   onTribeClick?: (tribeId: number) => void;
   camera: CameraState;
   onCameraChange: (camera: CameraState) => void;
+  // Building placement props
+  isPlacingBuilding?: boolean;
+  placingBuildingType?: BuildingType | null;
+  onPlaceBuilding?: (worldX: number, worldY: number) => void;
+  onCancelPlacement?: () => void;
+  // Sound callbacks
+  onVillagerAction?: (villager: Villager) => void;
 }
 
 // Action emoji mapping
@@ -97,12 +115,18 @@ export function GameCanvas({
   tribes,
   worldEvents,
   terrain,
+  buildings,
   onVillagerClick,
   selectedVillagerId,
   selectedTribeId,
   onTribeClick,
   camera,
   onCameraChange,
+  isPlacingBuilding = false,
+  placingBuildingType = null,
+  onPlaceBuilding,
+  onCancelPlacement,
+  onVillagerAction,
 }: GameCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const terrainCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -112,6 +136,49 @@ export function GameCanvas({
   const [lastDragPos, setLastDragPos] = useState({ x: 0, y: 0 });
   const [hoveredTribe, setHoveredTribe] = useState<Tribe | null>(null);
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+  
+  // Building placement state
+  const [buildingPreviewPos, setBuildingPreviewPos] = useState<{ x: number; y: number } | null>(null);
+  const [constructionParticles, setConstructionParticles] = useState<ConstructionParticle[]>([]);
+  
+  // Particle animation for buildings under construction
+  useEffect(() => {
+    if (buildings.length === 0) return;
+    
+    const interval = setInterval(() => {
+      const constructingBuildings = buildings.filter(b => !b.isComplete);
+      
+      if (constructingBuildings.length > 0 && Math.random() > 0.7) {
+        const building = constructingBuildings[Math.floor(Math.random() * constructingBuildings.length)];
+        setConstructionParticles(prev => [...prev, createConstructionParticle(building.posX, building.posY)]);
+      }
+      
+      // Update existing particles
+      setConstructionParticles(prev => 
+        prev
+          .map(p => updateParticle(p, 0.016))
+          .filter(p => p.life > 0)
+      );
+    }, 50);
+    
+    return () => clearInterval(interval);
+  }, [buildings]);
+  
+  // Track villager actions for sound effects
+  useEffect(() => {
+    if (!onVillagerAction) return;
+    
+    const interval = setInterval(() => {
+      // Only trigger sounds for visible villagers with active actions
+      villagers.forEach(villager => {
+        if (villager.action && villager.action !== 'idle' && Math.random() > 0.95) {
+          onVillagerAction(villager);
+        }
+      });
+    }, 200);
+    
+    return () => clearInterval(interval);
+  }, [villagers, onVillagerAction]);
 
   // Get current LOD level
   const lodLevel = getLODLevel(camera.zoom);
@@ -499,7 +566,20 @@ export function GameCanvas({
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
+      const rect = containerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      
+      const localX = e.clientX - rect.left;
+      const localY = e.clientY - rect.top;
+      
       setMousePos({ x: e.clientX, y: e.clientY });
+      
+      // Update building preview position
+      if (isPlacingBuilding && placingBuildingType) {
+        const worldX = screenToWorldX(localX, camera, canvasSize.width);
+        const worldY = screenToWorldY(localY, camera, canvasSize.height);
+        setBuildingPreviewPos({ x: worldX, y: worldY });
+      }
       
       if (!isDragging) return;
 
@@ -511,12 +591,39 @@ export function GameCanvas({
 
       setLastDragPos({ x: e.clientX, y: e.clientY });
     },
-    [isDragging, lastDragPos, camera, onCameraChange]
+    [isDragging, lastDragPos, camera, onCameraChange, isPlacingBuilding, placingBuildingType, canvasSize]
   );
 
-  const handleMouseUp = useCallback(() => {
+  const handleMouseUp = useCallback((e: React.MouseEvent) => {
     setIsDragging(false);
-  }, []);
+    
+    // Handle building placement on click
+    if (isPlacingBuilding && placingBuildingType && buildingPreviewPos && onPlaceBuilding && !isDragging) {
+      const rect = containerRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      
+      const localX = e.clientX - rect.left;
+      const localY = e.clientY - rect.top;
+      const worldX = screenToWorldX(localX, camera, canvasSize.width);
+      const worldY = screenToWorldY(localY, camera, canvasSize.height);
+      
+      // Check if valid position before placing
+      const selectedTribe = tribes.find(t => t.id === selectedTribeId);
+      if (selectedTribe) {
+        const isValid = isValidBuildingPosition(
+          worldX,
+          worldY,
+          placingBuildingType,
+          buildings,
+          { x: selectedTribe.centerX, y: selectedTribe.centerY, radius: selectedTribe.territoryRadius }
+        );
+        
+        if (isValid) {
+          onPlaceBuilding(worldX, worldY);
+        }
+      }
+    }
+  }, [isPlacingBuilding, placingBuildingType, buildingPreviewPos, onPlaceBuilding, camera, canvasSize, tribes, selectedTribeId, buildings, isDragging]);
 
   // Camera control handlers
   const handleZoomIn = useCallback(() => {
@@ -944,7 +1051,7 @@ export function GameCanvas({
 
         {/* Detailed hover card in medium/detailed view */}
         <AnimatePresence>
-          {isHovered && lodLevel !== "strategic" && (
+          {isHovered && (lodLevel === "medium" || lodLevel === "detailed") && (
             <motion.div
               initial={{ opacity: 0, y: 10, scale: 0.9 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -1109,6 +1216,157 @@ export function GameCanvas({
 
       {/* Resources Layer */}
       {visibleResources.map(renderResource)}
+
+      {/* Buildings Layer */}
+      {!isPlanetView && buildings.map((building) => {
+        const screenX = worldToScreenX(building.posX, camera, canvasSize.width);
+        const screenY = worldToScreenY(building.posY, camera, canvasSize.height);
+        const def = BUILDING_DEFINITIONS[building.type];
+        const scale = Math.min(1.5, Math.max(0.3, camera.zoom));
+        const size = Math.max(def.size.width, def.size.height) * scale;
+        
+        // Check if visible
+        if (screenX < -size || screenX > canvasSize.width + size ||
+            screenY < -size || screenY > canvasSize.height + size) {
+          return null;
+        }
+        
+        const isUnderConstruction = !building.isComplete;
+        const tribe = tribes.find(t => t.id === building.tribeId);
+        
+        return (
+          <motion.div
+            key={`building-${building.id}`}
+            className="absolute"
+            style={{
+              left: screenX - size / 2,
+              top: screenY - size / 2,
+              width: size,
+              height: size,
+            }}
+            initial={{ scale: 0, opacity: 0 }}
+            animate={{ 
+              scale: 1, 
+              opacity: isUnderConstruction ? 0.7 : 1,
+            }}
+          >
+            {/* Building base */}
+            <div 
+              className={`
+                w-full h-full rounded-lg flex items-center justify-center
+                ${isUnderConstruction ? 'border-2 border-dashed animate-pulse' : 'shadow-md'}
+              `}
+              style={{
+                backgroundColor: isUnderConstruction ? `${tribe?.color || '#666'}40` : `${tribe?.color || '#666'}80`,
+                borderColor: tribe?.color || '#666',
+              }}
+            >
+              <span 
+                style={{ fontSize: size * 0.5 }}
+                className={isUnderConstruction ? 'opacity-50' : ''}
+              >
+                {def.emoji}
+              </span>
+            </div>
+            
+            {/* Construction progress bar */}
+            {isUnderConstruction && (
+              <div className="absolute -bottom-2 left-0 right-0 h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                <motion.div
+                  className="h-full bg-yellow-400"
+                  initial={{ width: 0 }}
+                  animate={{ width: `${building.constructionProgress}%` }}
+                  transition={{ duration: 0.3 }}
+                />
+              </div>
+            )}
+            
+            {/* Workers indicator */}
+            {isUnderConstruction && building.workersAssigned.length > 0 && (
+              <div className="absolute -top-2 -right-2 bg-primary text-white text-[8px] rounded-full w-4 h-4 flex items-center justify-center">
+                {building.workersAssigned.length}
+              </div>
+            )}
+            
+            {/* Building name on hover (detailed view only) */}
+            {lodLevel === 'detailed' && (
+              <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 text-[8px] bg-black/70 text-white px-1 rounded whitespace-nowrap opacity-0 hover:opacity-100 transition-opacity">
+                {def.name} {isUnderConstruction && `(${Math.floor(building.constructionProgress)}%)`}
+              </div>
+            )}
+          </motion.div>
+        );
+      })}
+      
+      {/* Construction Particles */}
+      {!isPlanetView && constructionParticles.map((particle) => {
+        const screenX = worldToScreenX(particle.x, camera, canvasSize.width);
+        const screenY = worldToScreenY(particle.y, camera, canvasSize.height);
+        
+        return (
+          <motion.div
+            key={particle.id}
+            className="absolute pointer-events-none rounded-full"
+            style={{
+              left: screenX,
+              top: screenY,
+              width: particle.size * camera.zoom,
+              height: particle.size * camera.zoom,
+              backgroundColor: particle.color,
+              opacity: particle.life,
+            }}
+          />
+        );
+      })}
+      
+      {/* Building Placement Preview */}
+      {isPlacingBuilding && placingBuildingType && buildingPreviewPos && !isPlanetView && (
+        (() => {
+          const screenX = worldToScreenX(buildingPreviewPos.x, camera, canvasSize.width);
+          const screenY = worldToScreenY(buildingPreviewPos.y, camera, canvasSize.height);
+          const def = BUILDING_DEFINITIONS[placingBuildingType];
+          const scale = Math.min(1.5, Math.max(0.3, camera.zoom));
+          const size = Math.max(def.size.width, def.size.height) * scale;
+          
+          const selectedTribe = tribes.find(t => t.id === selectedTribeId);
+          const isValid = selectedTribe ? isValidBuildingPosition(
+            buildingPreviewPos.x,
+            buildingPreviewPos.y,
+            placingBuildingType,
+            buildings,
+            { x: selectedTribe.centerX, y: selectedTribe.centerY, radius: selectedTribe.territoryRadius }
+          ) : false;
+          
+          return (
+            <motion.div
+              className="absolute pointer-events-none"
+              style={{
+                left: screenX - size / 2,
+                top: screenY - size / 2,
+                width: size,
+                height: size,
+              }}
+              initial={{ scale: 0.5, opacity: 0 }}
+              animate={{ scale: 1, opacity: 0.8 }}
+            >
+              <div 
+                className={`
+                  w-full h-full rounded-lg border-2 border-dashed flex items-center justify-center
+                  ${isValid ? 'border-green-500 bg-green-500/30' : 'border-red-500 bg-red-500/30'}
+                `}
+              >
+                <span style={{ fontSize: size * 0.5 }}>{def.emoji}</span>
+              </div>
+              <div className={`
+                absolute -bottom-6 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded text-xs whitespace-nowrap
+                ${isValid ? 'bg-green-500 text-white' : 'bg-red-500 text-white'}
+              `}>
+                {isValid ? 'Click to place' : 'Invalid position'}
+              </div>
+            </motion.div>
+          );
+        })()
+      )}
 
       {/* Tribe Territories */}
       {tribes.map(renderTribe)}
